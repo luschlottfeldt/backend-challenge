@@ -328,6 +328,40 @@ sua"). Decidido: `debit(money: Money, transactionId: string): WalletLedgerEntry`
 lançamento de ledger correspondente, reforçando a invariante "toda alteração de saldo tem um
 lançamento correspondente" no próprio tipo de retorno do método.
 
+### Tarefa 4 — `Wallet` (implementado) — revisa a assinatura de `debit`/`credit`
+
+A decisão anterior (`debit(money, transactionId): WalletLedgerEntry`) foi **revista**: a
+aritmética do lançamento precisa de `id` e `createdAt` do próprio lançamento, e a factory
+`WalletLedgerEntry.create` exige ambos. Assinatura final:
+
+```
+debit(money: Money, ctx: WalletMovementContext): WalletLedgerEntry
+credit(money: Money, ctx: WalletMovementContext): WalletLedgerEntry
+// WalletMovementContext = { transactionId, ledgerEntryId, occurredAt }
+```
+
+O aggregate não gera ids nem lê o relógio — o caso de uso injeta tudo por `ctx`, mantendo o
+domínio determinístico e testável.
+
+- **`open`** retorna `{ wallet, openingEntry: WalletLedgerEntry | null }`. A wallet nasce já
+  com `initialBalance` e `version = 1`; se o saldo inicial for positivo, `openingEntry` é o
+  lançamento `CREDIT` de `0 → initialBalance`. **`version` continua `1`** mesmo com abertura
+  com saldo — bate com o exemplo de resposta da seção 9 (`POST /wallets` com `1000.00` →
+  `version: 1`). Interpretação adotada: a abertura é gênese da wallet, não uma "alteração de
+  saldo" no sentido do versionamento; movimentações posteriores (`debit`/`credit`) é que
+  incrementam.
+- **`debit`** rejeita overdraft com `InsufficientFundsError` (código default para `BET`). Para
+  `ROLLBACK`/`REFUND` que estouraria o saldo, o caso de uso chama `wallet.canDebit(money)`
+  **antes** e lança `ReversalWouldOverdrawError` — assim o aggregate mantém a invariante
+  "saldo nunca negativo" sem precisar saber o `kind` da operação, e o código de falha
+  distinto (seção 7.9) fica na camada que conhece o contexto.
+- `debit`/`credit` sempre incrementam `version` (movem saldo por definição — valor positivo
+  obrigatório, senão `InvalidLedgerEntryError`). Moeda divergente → `CurrencyMismatchError`.
+- `rehydrate` reconstrói sem validar (regra 6.0).
+
+9 testes em `src/domain/entities/wallet.spec.ts` (versão, entrada de abertura balanceada,
+overdraft, débito exato até zero, conflito de moeda, sequência de movimentos, reidratação).
+
 ### Armadilha de tooling: `decimal.js` + `"type": "module"` + `moduleResolution: nodenext`
 
 - Com `"type": "module"` no `package.json` (necessário para o projeto), `import Decimal from
