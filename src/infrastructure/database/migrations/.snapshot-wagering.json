@@ -256,16 +256,6 @@
       "indexes": [
         {
           "columnNames": [
-            "next_attempt_at"
-          ],
-          "composite": false,
-          "constraint": false,
-          "keyName": "outbox_messages_next_attempt_at_index",
-          "primary": false,
-          "unique": false
-        },
-        {
-          "columnNames": [
             "id"
           ],
           "composite": false,
@@ -273,6 +263,17 @@
           "keyName": "outbox_messages_pkey",
           "primary": true,
           "unique": true
+        },
+        {
+          "columnNames": [
+            "published_at",
+            "next_attempt_at"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "outbox_messages_published_at_next_attempt_at_index",
+          "primary": false,
+          "unique": false
         }
       ],
       "checks": [],
@@ -444,6 +445,23 @@
           ],
           "mappedType": "enum"
         },
+        "next_reference_check_at": {
+          "name": "next_reference_check_at",
+          "type": "timestamptz(6)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
         "payload_hash": {
           "name": "payload_hash",
           "type": "varchar(255)",
@@ -511,6 +529,23 @@
           "collation": null,
           "enumItems": [],
           "mappedType": "string"
+        },
+        "reference_check_attempts": {
+          "name": "reference_check_attempts",
+          "type": "int",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "integer"
         },
         "reference_external_transaction_id": {
           "name": "reference_external_transaction_id",
@@ -635,6 +670,27 @@
           "keyName": "wager_transactions_provider_id_external_transaction_id_unique",
           "primary": false,
           "unique": true
+        },
+        {
+          "columnNames": [
+            "reference_transaction_id"
+          ],
+          "composite": false,
+          "constraint": false,
+          "keyName": "wager_transactions_reference_transaction_id_index",
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "status",
+            "next_reference_check_at"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "wager_transactions_status_next_reference_check_at_index",
+          "primary": false,
+          "unique": false
         }
       ],
       "checks": [
@@ -830,6 +886,18 @@
         {
           "columnNames": [
             "wallet_id",
+            "created_at",
+            "id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "wallet_ledger_entries_wallet_id_created_at_id_index",
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "wallet_id",
             "transaction_id"
           ],
           "composite": true,
@@ -1002,7 +1070,7 @@
         {
           "name": "wallets_balance_amount_check",
           "expression": "balance_amount >= 0",
-          "definition": "check (balance_amount >= 0)",
+          "definition": "CHECK ((balance_amount >= (0)::numeric))",
           "columnName": "balance_amount"
         }
       ],

@@ -39,6 +39,8 @@ export interface WagerTransactionState {
   createdAt: Date;
   status: WagerTransactionStatus;
   referenceTransactionId?: string;
+  referenceCheckAttempts?: number;
+  nextReferenceCheckAt?: Date;
   failureCode?: FailureCode;
   processedAt?: Date;
 }
@@ -90,6 +92,8 @@ export class WagerTransaction {
     private _referenceTransactionId?: string,
     private _failureCode?: FailureCode,
     private _processedAt?: Date,
+    private _referenceCheckAttempts: number = 0,
+    private _nextReferenceCheckAt?: Date,
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
@@ -136,6 +140,8 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.processedAt,
+      state.referenceCheckAttempts ?? 0,
+      state.nextReferenceCheckAt,
     );
   }
 
@@ -153,6 +159,14 @@ export class WagerTransaction {
 
   get processedAt(): Date | undefined {
     return this._processedAt;
+  }
+
+  get referenceCheckAttempts(): number {
+    return this._referenceCheckAttempts;
+  }
+
+  get nextReferenceCheckAt(): Date | undefined {
+    return this._nextReferenceCheckAt;
   }
 
   markProcessed(referenceTransactionId: string | undefined, at: Date): void {

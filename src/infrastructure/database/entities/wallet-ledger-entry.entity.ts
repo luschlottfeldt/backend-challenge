@@ -16,6 +16,7 @@ export const WalletLedgerEntrySchema = defineEntity({
     createdAt: p.datetime(),
   },
   uniques: [{ properties: ['walletId', 'transactionId'] }],
+  indexes: [{ properties: ['walletId', 'createdAt', 'id'] }],
 });
 
 export class WalletLedgerEntryOrmEntity extends WalletLedgerEntrySchema.class {}

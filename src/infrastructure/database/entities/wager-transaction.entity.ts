@@ -22,10 +22,16 @@ export const WagerTransactionSchema = defineEntity({
     createdAt: p.datetime(),
     status: p.enum(WagerTransactionStatus),
     referenceTransactionId: p.uuid().nullable(),
+    referenceCheckAttempts: p.integer().default(0),
+    nextReferenceCheckAt: p.datetime().nullable(),
     failureCode: p.string().nullable(),
     processedAt: p.datetime().nullable(),
   },
   uniques: [{ properties: ['providerId', 'externalTransactionId'] }],
+  indexes: [
+    { properties: ['status', 'nextReferenceCheckAt'] },
+    { properties: ['referenceTransactionId'] },
+  ],
 });
 
 export class WagerTransactionOrmEntity extends WagerTransactionSchema.class {}

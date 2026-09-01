@@ -25,4 +25,12 @@ export class Migration20260901034558 extends Migration {
     this.addSql(`alter table "wallet_ledger_entries" add constraint "wallet_ledger_entries_direction_check" check ("direction" in ('DEBIT', 'CREDIT'));`);
   }
 
+  override down(): void | Promise<void> {
+    this.addSql(`drop table if exists "wallet_ledger_entries" cascade;`);
+    this.addSql(`drop table if exists "wallets" cascade;`);
+    this.addSql(`drop table if exists "wager_transactions" cascade;`);
+    this.addSql(`drop table if exists "outbox_messages" cascade;`);
+    this.addSql(`drop table if exists "inbox_messages" cascade;`);
+  }
+
 }

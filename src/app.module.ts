@@ -17,6 +17,8 @@ import { DatabaseHealthIndicator } from './infrastructure/database/database-heal
 import { SqsHealthIndicator } from './infrastructure/messaging/sqs-health.indicator.js';
 import { SQS_CLIENT, createSqsClient } from './infrastructure/messaging/sqs-client.provider.js';
 import { StructuredLogger } from './infrastructure/logger/structured-logger.service.js';
+import { MikroOrmTransactionRunner } from './infrastructure/database/mikro-orm-transaction-runner.js';
+import { TRANSACTION_RUNNER } from './application/ports/transaction-runner.js';
 import {
   WALLET_REPOSITORY,
   WAGER_TRANSACTION_REPOSITORY,
@@ -42,6 +44,7 @@ import {
     { provide: WALLET_LEDGER_ENTRY_REPOSITORY, useClass: WalletLedgerEntryRepository },
     { provide: INBOX_MESSAGE_REPOSITORY, useClass: InboxMessageRepository },
     { provide: OUTBOX_MESSAGE_REPOSITORY, useClass: OutboxMessageRepository },
+    { provide: TRANSACTION_RUNNER, useClass: MikroOrmTransactionRunner },
     { provide: APP_FILTER, useClass: DomainExceptionFilter },
   ],
 })

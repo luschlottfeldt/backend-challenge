@@ -13,7 +13,7 @@ export const OutboxMessageSchema = defineEntity({
     nextAttemptAt: p.datetime().nullable(),
     publishedAt: p.datetime().nullable(),
   },
-  indexes: [{ properties: ['nextAttemptAt'] }],
+  indexes: [{ properties: ['publishedAt', 'nextAttemptAt'] }],
 });
 
 export class OutboxMessageOrmEntity extends OutboxMessageSchema.class {}

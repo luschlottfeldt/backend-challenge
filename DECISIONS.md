@@ -38,6 +38,119 @@ lançam `Not implemented`), os casos de uso em `application/use-cases/`, as impl
 dos repositórios, o worker de outbox, o consumidor SQS, o mapeamento de status HTTP no
 `DomainExceptionFilter`, e os testes de fato (unidade, integração completa, concorrência).
 
+## Bloco B — Persistência
+
+### Tarefa 9 — migrations reversíveis + revisão de schema (implementado)
+
+- **`Migration20260901034558` ganhou `down()`** (a migration inicial do boilerplate só tinha
+  `up()`): `drop table if exists ... cascade` das 5 tabelas em ordem inversa. `cascade` remove
+  constraints/índices junto.
+- **`Migration20260901194833`** (nova, gerada por `migration:create` a partir do diff das
+  entidades — `up()`/`down()` automáticos na v7):
+  - `wager_transactions`: `+ reference_check_attempts int not null default 0`,
+    `+ next_reference_check_at timestamptz null` — estado de backoff **por linha** do worker de
+    reprocessamento de `PENDING_REFERENCE` (seção 7.1: "backoff exponencial" + "limite de
+    tentativas ou TTL"). Optamos por rastrear tentativas na própria linha, não só um TTL por
+    `created_at`, pra ter backoff exponencial real por transação.
+  - `+ index (status, next_reference_check_at)` — query do worker
+    (`WHERE status = 'PENDING_REFERENCE' AND next_reference_check_at <= now`).
+  - `+ index (reference_transaction_id)` — checagem "referência já revertida por este kind"
+    (`WHERE reference_transaction_id = ? AND kind = ?`). Sem FK self-referencial por ora: a
+    unique `(wallet_id, transaction_id)` no ledger + as validações do caso de uso já barram
+    dupla reversão; a FK seria defesa em profundidade e foi deixada como melhoria possível.
+  - `wallet_ledger_entries`: `+ index (wallet_id, created_at, id)` — paginação keyset do
+    endpoint `GET /wallets/:id/ledger` (cursor estável por `created_at`+`id`).
+  - `outbox_messages`: índice `(next_attempt_at)` → `(published_at, next_attempt_at)` — casa
+    com a query `findDue` (`WHERE published_at IS NULL AND next_attempt_at <= now`).
+- **Ciclo validado contra o Postgres real** (containers do `docker-compose.yml`):
+  `up` → `migration:check` limpo → `down` (Migration2) → `down` (Migration1, teardown total,
+  sobra só `mikro_orm_migrations`) → `up` (reaplica as duas do zero) → `migration:check`
+  limpo. `bun test src` (100) e `bun run test:integration` (1) verdes.
+
+### Tarefa 10 — mapeadores Data Mapper (implementado)
+
+`src/infrastructure/database/mappers/*.mapper.ts` — um por entidade (`wallet`,
+`wagerTransaction`, `walletLedgerEntry`, `inboxMessage`, `outboxMessage`), cada um um objeto
+com `toDomain(row)` / `toPersistence(entity)`:
+
+- `toDomain` **sempre** usa a factory `rehydrate` do domínio (não revalida — regra 6.0).
+- `Money` ↔ colunas separadas `amount` (string decimal, como o driver `pg` devolve `numeric`) +
+  `currency`. Reconstruído com `Money.from({ amount, currency })`.
+- **Conversão `null` ↔ `undefined`**: o Postgres devolve `null` em colunas nullable, o domínio
+  usa `undefined`. `toDomain` faz `row.x ?? undefined`; `toPersistence` faz `entity.x ?? null`.
+- Cada mapper declara uma interface `XxxRow` **estrutural** (não a classe ORM) — a instância
+  `defineEntity` do MikroORM é estruturalmente compatível e é passada direto pelo repositório;
+  os testes montam rows sem tocar no ORM.
+- `wagerTransaction` mapeia também `referenceCheckAttempts` / `nextReferenceCheckAt` — por
+  isso a `WagerTransaction` do domínio ganhou esses dois campos (state + `rehydrate` +
+  getters); os **métodos** de agendamento do backoff de `PENDING_REFERENCE` ficam para a
+  tarefa 14. `WagerTransactionState.referenceCheckAttempts` é opcional (`?? 0` no `rehydrate`)
+  pra não quebrar chamadas existentes.
+
+7 testes de round-trip em `mappers.spec.ts` (domínio → `toPersistence` → row → `toDomain`),
+cobrindo optionals nulos, estados terminais, referência resolvida.
+
+### Tarefas 11 e 12 — repositórios de Wallet, WagerTransaction e Ledger (implementado)
+
+**Padrão comum de `save`** (evita acoplar o domínio ao ORM): `mapper.toPersistence(entity)` →
+`em.findOne({ id })`; se existe, `em.assign(managed, row)`, senão
+`em.persist(em.create(OrmEntity, row))`; depois `await em.flush()`. `flush()` dentro de um
+`em.transactional` escreve na transação aberta sem commitar (o commit é do wrapper de UoW —
+tarefa 14); fora dele, é autocommit. Semântica de "save" consistente nos dois casos.
+
+- **`version`** da wallet é coluna `int` comum (não `@Version` do MikroORM) — a estratégia é
+  **pessimistic locking**, o `version` é controlado pelo domínio, não pelo ORM.
+- **`WalletRepository.findByIdForUpdate`** = `em.findOne(..., { lockMode:
+  LockMode.PESSIMISTIC_WRITE })` → `SELECT … FOR UPDATE`. Exige transação aberta (testado
+  dentro de `em.transactional`).
+- **`WagerTransactionRepository.findPendingReference(now, limit)`** — assinatura da interface
+  ganhou `now` (era só `limit`). Filtra `status = PENDING_REFERENCE AND (next_reference_check_at
+  IS NULL OR <= now)`, ordena por `next_reference_check_at asc`. **Sem lock** aqui: é só a
+  listagem de candidatos; a serialização real vem do lock pessimista da wallet + checagem de
+  estado terminal no caso de uso de reprocessamento.
+- **Ledger é append-only**: `save` só faz `persist(create(...))` + `flush`, nunca `assign`.
+  Duplicidade `(wallet_id, transaction_id)` estoura a unique do schema (testado).
+- **`WalletLedgerEntryRepository.findByWallet(walletId, cursor?, limit?)`** — paginação
+  **keyset** por `(created_at, id)`: `WHERE wallet_id = ? AND (created_at > c.createdAt OR
+  (created_at = c.createdAt AND id > c.id)) ORDER BY created_at, id LIMIT n`. Usa o índice
+  `(wallet_id, created_at, id)` da tarefa 9. `limit` default 50, teto 200.
+- **Cursor opaco** (`ledger-cursor.ts`): base64url de `{ c: createdAt ISO, i: id }`. Decode
+  valida e lança `InvalidLedgerCursorError` (`DomainError`, `INVALID_LEDGER_CURSOR` → HTTP 400)
+  em cursor malformado. `encodeLedgerCursor` fica disponível pro caso de uso `GetLedger`
+  montar o `nextCursor`.
+
+**Testes de integração** contra Postgres real (`test/integration/orm-fixture.ts` — init do
+MikroORM + `truncate ... cascade` no `beforeEach`): round-trip, uniques
+(`player_id+currency`, `idempotency_key`, `provider_id+external_transaction_id`,
+`wallet_id+transaction_id`), path de update via `assign`, `findByIdForUpdate` sob transação,
+`findPendingReference` filtrando, paginação por cursor em 3 páginas, cursor inválido. **14
+testes de integração + 6 unitários** (`ledger-cursor.spec.ts`, `mappers` já contava).
+
+### Tarefas 13 e 14 — repositórios de mensageria + Unit of Work (implementado) — fecha o Bloco B
+
+- **`InboxMessageRepository`** — `findByMessageId(consumerName, messageId)` pela PK composta;
+  `save` no mesmo padrão find-or-`assign`/`create` + `flush`. A unicidade real é a PK composta
+  no schema (testada com `insert` cru duplicado → viola).
+- **`OutboxMessageRepository.findDue(now, limit)`** — `WHERE published_at IS NULL AND
+  (next_attempt_at IS NULL OR <= now) ORDER BY next_attempt_at LIMIT n` com
+  `LockMode.PESSIMISTIC_PARTIAL_WRITE` (= `FOR UPDATE SKIP LOCKED`). Exige transação aberta.
+  Teste de concorrência real: publisher A segura o lock de uma linha numa transação; publisher
+  B, em paralelo, chama `findDue` e **recebe a outra linha** (não bloqueia, não repete).
+- **Port de Unit of Work** — `TransactionRunner { run<T>(work): Promise<T> }` +
+  `TRANSACTION_RUNNER` (Symbol) em `application/ports/`. Impl `MikroOrmTransactionRunner` =
+  `this.em.transactional(work)`. **Descoberta validada:** dentro de `em.transactional(cb)` o
+  MikroORM cria um fork e o expõe via `TransactionContext` (AsyncLocalStorage), então
+  qualquer `repo` que use `this.em.*` dentro de `cb` — mesmo tendo recebido o `EntityManager`
+  global por DI — resolve para o fork transacional. Não é preciso passar o `em` para os
+  repositórios. Registrado no `AppModule`; app sobe limpo.
+- Teste de atomicidade: `runner.run` gravando wallet + wager_tx + ledger + outbox → tudo
+  commitado junto; `runner.run` que lança no meio → **rollback total** (nada persistido).
+
+**Bloco B concluído:** migrations reversíveis validadas contra Postgres real, 5 mapeadores
+Data Mapper, 5 repositórios reais, port de UoW. **111 testes unitários + 21 de integração**
+(Postgres real via Docker Compose), `migration:check` limpo, `tsc`/`oxlint` limpos, `nest
+start` sobe sem erro de DI.
+
 ## Estrutura do projeto
 
 - O código do desafio vive dentro desta pasta (`backend-challenge/`), que já é seu próprio
