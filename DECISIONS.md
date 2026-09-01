@@ -251,6 +251,59 @@ não tem a flag.
 domínio). **114 testes unitários + 42 de integração**, `tsc`/`oxlint`/`migration:check`
 limpos, `nest start` sobe sem erro de DI.
 
+## Bloco D — Camada HTTP
+
+### Tarefa 20 — controllers ligados aos casos de uso
+
+- `WalletsController` e `WageringTransactionsController` deixam de ser stubs e recebem os casos
+  de uso por injeção de construtor (classes concretas, sem token — são `@Injectable` no
+  `AppModule`). DTOs já validados pelo `ValidationPipe` global viram comandos; os `*View` /
+  resultados dos casos de uso são o corpo da resposta sem transformação extra.
+- `POST /wallets` → 201 com `WalletView`. `POST /wallets/:id/reconciliation` → 200 (é consulta,
+  não criação). `GET /wallets/:id/ledger` aceita `?cursor=` e `?limit=` (`ParseIntPipe optional`).
+- Header opcional `X-Correlation-Id` propagado para os casos de uso em ambos os POST; ausente,
+  o caso de uso gera um via `IdGenerator`.
+
+### Tarefa 20.1 — `Idempotency-Key` obrigatório e status por desfecho
+
+- `POST /wagering/transactions` lê o header `idempotency-key`; ausente ou vazio → `400`
+  (`BadRequestException`, normalizado para `VALIDATION_FAILED` pelo filtro).
+- O caso de uso **não lança** para rejeição de negócio (retorna `status`), então o controller
+  fixa o status HTTP pelo desfecho via `@Res({ passthrough: true })`:
+  `PROCESSED` → 200, `PENDING_REFERENCE` → 202, `REJECTED`/`FAILED` → 422. O corpo é sempre o
+  `SubmitWagerTransactionResult` (`{ transactionId, status, balance, failureCode?, idempotentReplay }`).
+
+### Tarefa 21 — `DomainExceptionFilter` (mapa exceção → HTTP)
+
+Filtro global `@Catch()` (registrado como `APP_FILTER`), injeta `LOGGER`. Ordem de teste importa
+porque `IdempotencyConflictError` estende `WagerRejectionError`:
+
+| Exceção | Status | `code` no corpo |
+| --- | --- | --- |
+| `HttpException` 400 (ValidationPipe) | 400 | `VALIDATION_FAILED` (+ `details`) |
+| `IdempotencyConflictError` | 409 | `IDEMPOTENCY_CONFLICT` |
+| `WalletAlreadyExistsError`, `PersistenceConflictError` | 409 | `WALLET_ALREADY_EXISTS` / `PERSISTENCE_CONFLICT` |
+| `WagerRejectionError` (demais) | 422 | o `code` + `failureCode` iguais |
+| `WalletNotFoundError`, `WagerTransactionNotFoundError` | 404 | `WALLET_NOT_FOUND` / `WAGER_TRANSACTION_NOT_FOUND` |
+| `InvalidLedgerCursorError`, `InvalidMoneyError` | 400 | `INVALID_LEDGER_CURSOR` / `INVALID_MONEY` |
+| `LockWaitTimeoutException`, `DeadlockException`, `ConnectionException` (MikroORM) | 503 | `TRANSIENT_INFRASTRUCTURE_ERROR` |
+| `WagerFailureError` / outros `DomainError` | 500 | o `code` (log de `error` com stack) |
+| desconhecido | 500 | `INTERNAL_ERROR` (log com stack) |
+
+- Corpo padronizado: `{ code, message, failureCode?, details? }`. `failureCode` só aparece em 422
+  (rejeição de negócio) — os cinco casos que a seção 9 exige distinguir ficam em códigos HTTP
+  distintos: 400 payload inválido, 409 conflito de idempotência, 422 rejeição de negócio,
+  202 aceite pendente, 503 infra transitória.
+- `RequestContext` do MikroORM validado num request HTTP real: `test/integration/http.spec.ts`
+  sobe o `AppModule` inteiro com `supertest` contra o Postgres do Docker Compose — 12 casos
+  cobrindo criar wallet, conflito, validação, BET, replay, conflito de idempotência,
+  saldo insuficiente (422), refund pendente (202), consultas e 404. Os casos de uso de consulta
+  agora rodam dentro do `RequestContext` que o `@mikro-orm/nestjs` injeta por request, sem
+  precisar de `allowGlobalContext`.
+
+**Bloco D:** 2 controllers reais, filtro de exceção com mapa completo, **114 unitários + 54 de
+integração**, `tsc`/`oxlint` limpos.
+
 ## Estrutura do projeto
 
 - O código do desafio vive dentro desta pasta (`backend-challenge/`), que já é seu próprio
