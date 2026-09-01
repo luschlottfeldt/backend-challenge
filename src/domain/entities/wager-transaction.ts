@@ -1,8 +1,11 @@
 import { Money, type MoneyProps } from './money.js';
-import type { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
-import type { WagerTransactionStatus } from '../enums/wager-transaction-status.enum.js';
-import type { LedgerDirection } from '../enums/ledger-direction.enum.js';
+import { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
+import { WagerTransactionStatus } from '../enums/wager-transaction-status.enum.js';
+import { LedgerDirection } from '../enums/ledger-direction.enum.js';
 import type { FailureCode } from '../enums/failure-code.js';
+import { InvalidTransactionStateError } from '../errors/invalid-transaction-state.error.js';
+import { InvalidLedgerEntryError } from '../errors/invalid-ledger-entry.error.js';
+import { ReferenceResolutionError } from '../errors/reference-resolution.error.js';
 
 export interface CreateWagerTransactionProps {
   id: string;
@@ -40,6 +43,34 @@ export interface WagerTransactionState {
   processedAt?: Date;
 }
 
+const TRANSITIONS: Record<WagerTransactionStatus, readonly WagerTransactionStatus[]> = {
+  [WagerTransactionStatus.Pending]: [
+    WagerTransactionStatus.Processed,
+    WagerTransactionStatus.PendingReference,
+    WagerTransactionStatus.Rejected,
+    WagerTransactionStatus.Failed,
+  ],
+  [WagerTransactionStatus.PendingReference]: [
+    WagerTransactionStatus.Processed,
+    WagerTransactionStatus.Rejected,
+    WagerTransactionStatus.Failed,
+  ],
+  [WagerTransactionStatus.Processed]: [],
+  [WagerTransactionStatus.Rejected]: [],
+  [WagerTransactionStatus.Failed]: [],
+};
+
+const REFERENCE_REQUIRING_KINDS: readonly WagerTransactionKind[] = [
+  WagerTransactionKind.Refund,
+  WagerTransactionKind.Rollback,
+];
+
+const CREDIT_KINDS: readonly WagerTransactionKind[] = [
+  WagerTransactionKind.Win,
+  WagerTransactionKind.Refund,
+  WagerTransactionKind.Opening,
+];
+
 export class WagerTransaction {
   private constructor(
     public readonly id: string,
@@ -61,12 +92,51 @@ export class WagerTransaction {
     private _processedAt?: Date,
   ) {}
 
-  static create(_props: CreateWagerTransactionProps): WagerTransaction {
-    throw new Error('Not implemented');
+  static create(props: CreateWagerTransactionProps): WagerTransaction {
+    const transaction = new WagerTransaction(
+      props.id,
+      props.providerId,
+      props.externalTransactionId,
+      props.idempotencyKey,
+      props.payloadHash,
+      props.walletId,
+      props.playerId,
+      props.roundId,
+      props.gameId,
+      props.kind,
+      props.money,
+      props.referenceExternalTransactionId,
+      props.createdAt,
+      WagerTransactionStatus.Pending,
+    );
+
+    if (transaction.requiresReference() && !props.referenceExternalTransactionId) {
+      throw ReferenceResolutionError.required();
+    }
+
+    return transaction;
   }
 
-  static rehydrate(_state: WagerTransactionState): WagerTransaction {
-    throw new Error('Not implemented');
+  static rehydrate(state: WagerTransactionState): WagerTransaction {
+    return new WagerTransaction(
+      state.id,
+      state.providerId,
+      state.externalTransactionId,
+      state.idempotencyKey,
+      state.payloadHash,
+      state.walletId,
+      state.playerId,
+      state.roundId,
+      state.gameId,
+      state.kind,
+      Money.from(state.money),
+      state.referenceExternalTransactionId,
+      state.createdAt,
+      state.status,
+      state.referenceTransactionId,
+      state.failureCode,
+      state.processedAt,
+    );
   }
 
   get status(): WagerTransactionStatus {
@@ -85,39 +155,63 @@ export class WagerTransaction {
     return this._processedAt;
   }
 
-  markProcessed(_referenceTransactionId: string | undefined, _at: Date): void {
-    throw new Error('Not implemented');
+  markProcessed(referenceTransactionId: string | undefined, at: Date): void {
+    this.transitionTo(WagerTransactionStatus.Processed);
+    this._referenceTransactionId = referenceTransactionId;
+    this._processedAt = at;
   }
 
   markPendingReference(): void {
-    throw new Error('Not implemented');
+    this.transitionTo(WagerTransactionStatus.PendingReference);
   }
 
-  reject(_code: FailureCode): void {
-    throw new Error('Not implemented');
+  reject(code: FailureCode): void {
+    this.transitionTo(WagerTransactionStatus.Rejected);
+    this._failureCode = code;
   }
 
-  fail(_code: FailureCode): void {
-    throw new Error('Not implemented');
+  fail(code: FailureCode): void {
+    this.transitionTo(WagerTransactionStatus.Failed);
+    this._failureCode = code;
   }
 
   isTerminal(): boolean {
-    throw new Error('Not implemented');
+    return TRANSITIONS[this._status].length === 0;
   }
 
   affectsBalance(): boolean {
-    throw new Error('Not implemented');
+    return this.kind !== WagerTransactionKind.Loss;
   }
 
   requiresReference(): boolean {
-    throw new Error('Not implemented');
+    return REFERENCE_REQUIRING_KINDS.includes(this.kind);
   }
 
-  matchesPayload(_payloadHash: string): boolean {
-    throw new Error('Not implemented');
+  matchesPayload(payloadHash: string): boolean {
+    return this.payloadHash === payloadHash;
   }
 
-  ledgerDirectionFor(_reference?: WagerTransaction): LedgerDirection {
-    throw new Error('Not implemented');
+  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
+    if (this.kind === WagerTransactionKind.Loss) {
+      throw new InvalidLedgerEntryError('LOSS does not produce a ledger movement');
+    }
+
+    if (this.kind === WagerTransactionKind.Rollback) {
+      if (!reference) {
+        throw new InvalidLedgerEntryError('ROLLBACK requires its reference to determine direction');
+      }
+      return reference.ledgerDirectionFor() === LedgerDirection.Debit
+        ? LedgerDirection.Credit
+        : LedgerDirection.Debit;
+    }
+
+    return CREDIT_KINDS.includes(this.kind) ? LedgerDirection.Credit : LedgerDirection.Debit;
+  }
+
+  private transitionTo(next: WagerTransactionStatus): void {
+    if (!TRANSITIONS[this._status].includes(next)) {
+      throw new InvalidTransactionStateError(this._status, next);
+    }
+    this._status = next;
   }
 }

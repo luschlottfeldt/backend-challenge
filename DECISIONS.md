@@ -362,6 +362,132 @@ domínio determinístico e testável.
 9 testes em `src/domain/entities/wallet.spec.ts` (versão, entrada de abertura balanceada,
 overdraft, débito exato até zero, conflito de moeda, sequência de movimentos, reidratação).
 
+### Tarefa 5 — `WagerTransaction` (implementado)
+
+Máquina de estados como tabela `TRANSITIONS: Record<Status, readonly Status[]>` dentro da
+classe (decisão já registrada em "Máquina de estados de `WagerTransaction`"). `transitionTo`
+consulta a tabela e lança `InvalidTransactionStateError(atual, tentado)` em transição
+inválida. `isTerminal()` = `TRANSITIONS[status].length === 0` (uma única fonte da verdade).
+
+Transições válidas:
+
+- `PENDING` → `PROCESSED` | `PENDING_REFERENCE` | `REJECTED` | `FAILED`
+- `PENDING_REFERENCE` → `PROCESSED` | `REJECTED` | `FAILED`
+- `PROCESSED` / `REJECTED` / `FAILED` → ∅ (terminais)
+
+Decisão: **`PENDING_REFERENCE` → `PENDING_REFERENCE` não é permitido**. O worker de
+reprocessamento não "re-marca" uma pendência ainda irresolvível — só age quando resolve
+(`markProcessed`) ou quando esgota o limite/TTL (`reject(REFERENCE_NOT_FOUND)`); enquanto isso
+a linha é deixada intacta.
+
+- `create` nasce `PENDING` e valida **só** a exigência de referência por kind
+  (`REFUND`/`ROLLBACK` sem `referenceExternalTransactionId` → `ReferenceResolutionError.required()`).
+  As demais validações de referência (contexto, kind da referência, valor, já-revertida)
+  dependem de I/O e ficam no caso de uso, não na factory.
+- `affectsBalance()` é puramente por kind: `kind !== LOSS` (inclui `OPENING`). Status não
+  entra — uma transação `REJECTED` "não afeta saldo" por status, o que é problema do caso de
+  uso, não desta consulta.
+- `ledgerDirectionFor(reference?)`: `BET`→`DEBIT`; `WIN`/`REFUND`/`OPENING`→`CREDIT`;
+  `ROLLBACK`→inverso da direção da referência (exige `reference`, senão
+  `InvalidLedgerEntryError`); `LOSS`→`InvalidLedgerEntryError` (não produz movimento — o
+  caso de uso checa `affectsBalance()` antes).
+- `markProcessed(referenceTransactionId?, at)` grava o **id interno** da referência resolvida
+  e `processedAt`. `reject`/`fail` gravam `failureCode` (sem timestamp — auditoria via
+  `createdAt` + `occurredAt` do evento de outbox).
+- `rehydrate` não revalida (regra 6.0) — reconstrói inclusive estados terminais.
+
+15 testes em `src/domain/entities/wager-transaction.spec.ts`.
+
+### Tarefa 6 — eventos de integração (implementado)
+
+- `IntegrationEvent.toJSON()` retorna `IntegrationEventEnvelope<T>` (tipo nomeado, reusado pela
+  outbox): `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`,
+  `occurredAt` (ISO-8601 via `toISOString()`), `version`, `data`. `causationId` fica no objeto
+  como `undefined` quando ausente e é **omitido na serialização** por `JSON.stringify` — sem
+  ramo condicional.
+- `EventContext` movido de `wallet-balance-changed.event.ts` para `events/event-context.ts` e
+  **expandido**: `{ eventId, correlationId, causationId?, occurredAt }`. O caso de uso gera
+  `eventId` (uuid) e fixa um único `occurredAt` para todos os eventos emitidos na mesma
+  transação — mantém o domínio determinístico (nada de `randomUUID()`/`new Date()` dentro das
+  factories de evento).
+- 4 subclasses concretas, uma por arquivo, `eventType` + `version` **no tipo** (não string no
+  call site): `WalletBalanceChanged.from(wallet, entry, ctx)`,
+  `WagerTransactionProcessed.from(tx, ctx)` (com `affectedBalance`),
+  `WagerTransactionRejected.from(tx, failureCode, ctx)`,
+  `WagerTransactionPendingReference.from(tx, ctx)`.
+- `data` de todo evento carrega `MoneyProps` (string decimal via `Money.toJSON()`), nunca a
+  instância `Money` — payload JSON estável e versionável (seção 11).
+
+10 testes em `src/domain/events/integration-event.spec.ts`.
+
+### Tarefa 7 — `InboxMessage` / `OutboxMessage` (implementado)
+
+**Backoff** extraído para `src/domain/support/exponential-backoff.ts` (função pura,
+reutilizável pelo worker de `PENDING_REFERENCE` depois): `delay = min(base·factor^(n-1), max)`,
+default `base = 5s`, `factor = 2`, `max = 1h`. Determinístico (sem jitter) — os workers da
+outbox usam `SELECT … FOR UPDATE SKIP LOCKED`, então thundering herd não é problema; jitter
+fica como melhoria possível.
+
+**`InboxMessage`** — só dedup + marcador de processamento. `receive` cria não-processada;
+`markProcessed(at)` grava o timestamp e lança `InvalidMessageStateError` se já processada
+(erro de programação — o PK `(consumer_name, message_id)` + transação impedem
+reprocessamento). Sem campos de retry: redelivery/backoff do consumidor é responsabilidade do
+SQS (visibility timeout) e da DLQ (`maxReceiveCount = 5`, já configurado na fila).
+
+**`OutboxMessage`**:
+- `enqueue(event)` usa **`event.eventId` como `id` da linha** → reenfileirar o mesmo evento
+  colide no PK, dedup natural na produção. `payload` = envelope serializado via
+  `JSON.parse(JSON.stringify(event.toJSON()))` — objeto plano, sem `undefined`, canônico.
+  `nextAttemptAt` nasce = `occurredAt` (due imediatamente).
+- `isDue(now)` = pendente **e** (`nextAttemptAt` indefinido ou `<= now`). O worker consulta
+  `WHERE published_at IS NULL AND next_attempt_at <= now`.
+- `scheduleRetry(now)` incrementa `attempts` e empurra `nextAttemptAt` pelo backoff.
+  `markPublished`/`scheduleRetry` lançam `InvalidMessageStateError` se já publicada.
+- **Sem teto de tentativas** na outbox — um evento já commitado **não pode ser descartado**
+  (invariante "não perder eventos confirmados"); retenta para sempre com backoff capado em 1h.
+  DLQ é conceito do lado do consumidor (inbox), não da outbox.
+
+`InvalidMessageStateError` (`INVALID_MESSAGE_STATE`) — um erro compartilhado pelos dois guards.
+
+22 testes (`inbox-message.spec.ts`, `outbox-message.spec.ts`, `exponential-backoff.spec.ts`).
+
+### Tarefa 8 — `payloadHash` (implementado) — fecha o Bloco A
+
+`src/domain/support/canonical-json.ts` — `canonicalJsonStringify(value)`:
+
+1. ordena as chaves de todo objeto lexicograficamente, **recursivamente**;
+2. descarta `undefined` (não é JSON válido); mantém `null`;
+3. preserva a ordem de arrays;
+4. `JSON.stringify` sem espaços.
+
+`src/domain/support/payload-hash.ts` — `hashWagerTransactionPayload(payload)`:
+
+- monta um objeto **explícito** só com os campos de negócio: `providerId`,
+  `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money`,
+  `referenceExternalTransactionId?`. Como os campos são listados um a um, qualquer campo extra
+  na entrada (`idempotencyKey`, `messageId`, `occurredAt`, envelope de transporte) **não
+  entra** no hash — atende a seção 9 ("o header e metadados de transporte não entram no hash");
+- `money` é normalizado por `Money.from(...).toJSON()` → `"25.0"` e `"25.00"` produzem o mesmo
+  hash (escala fixa 2);
+- `sha256(canonicalJsonStringify(normalized))` em hex (64 chars), via `node:crypto`
+  (`createHash`) — primitivo de plataforma, não framework, então o domínio continua limpo.
+
+Uso: o caso de uso calcula o `payloadHash` na entrada (HTTP e SQS), grava na
+`wager_transactions`; replay = mesma `idempotencyKey` **e** mesmo `payloadHash`; mesma key com
+hash diferente = `IDEMPOTENCY_CONFLICT` (seção 9, `matchesPayload` na `WagerTransaction`).
+
+11 testes (`canonical-json.spec.ts`, `payload-hash.spec.ts`).
+
+---
+
+## Bloco A concluído — resumo
+
+Domínio puro completo e testável sem infraestrutura: **100 testes unitários**, `tsc --noEmit`
+e `oxlint` limpos. `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction` (state machine),
+os 4 eventos de integração, `InboxMessage`/`OutboxMessage` (backoff), taxonomia de
+`FailureCode` + hierarquia de erros, e os utilitários `exponential-backoff` / `canonical-json`
+/ `payload-hash`. Nenhuma dependência de NestJS, MikroORM ou AWS SDK na camada `domain/`.
+
 ### Armadilha de tooling: `decimal.js` + `"type": "module"` + `moduleResolution: nodenext`
 
 - Com `"type": "module"` no `package.json` (necessário para o projeto), `import Decimal from

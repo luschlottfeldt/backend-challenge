@@ -1,3 +1,5 @@
+import { InvalidMessageStateError } from '../errors/invalid-message-state.error.js';
+
 export interface ReceiveInboxProps {
   messageId: string;
   consumerName: string;
@@ -22,12 +24,18 @@ export class InboxMessage {
     private _processedAt?: Date,
   ) {}
 
-  static receive(_props: ReceiveInboxProps): InboxMessage {
-    throw new Error('Not implemented');
+  static receive(props: ReceiveInboxProps): InboxMessage {
+    return new InboxMessage(props.messageId, props.consumerName, props.payloadHash, props.receivedAt);
   }
 
-  static rehydrate(_state: InboxMessageState): InboxMessage {
-    throw new Error('Not implemented');
+  static rehydrate(state: InboxMessageState): InboxMessage {
+    return new InboxMessage(
+      state.messageId,
+      state.consumerName,
+      state.payloadHash,
+      state.receivedAt,
+      state.processedAt,
+    );
   }
 
   get processedAt(): Date | undefined {
@@ -35,10 +43,15 @@ export class InboxMessage {
   }
 
   isProcessed(): boolean {
-    throw new Error('Not implemented');
+    return this._processedAt !== undefined;
   }
 
-  markProcessed(_at: Date): void {
-    throw new Error('Not implemented');
+  markProcessed(at: Date): void {
+    if (this.isProcessed()) {
+      throw new InvalidMessageStateError(
+        `inbox message ${this.consumerName}/${this.messageId} was already processed`,
+      );
+    }
+    this._processedAt = at;
   }
 }
