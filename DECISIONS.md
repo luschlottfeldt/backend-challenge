@@ -407,6 +407,50 @@ lançamento correspondente" no próprio tipo de retorno do método.
   inválidas, drift de ponto flutuante `0.10 + 0.20 == 0.30`, imutabilidade, predicados,
   conflito de moeda, round-trip `toJSON`). `bun test`, `tsc --noEmit` e `oxlint` limpos.
 
+### Tarefa 2 — taxonomia de `FailureCode` + erros de domínio (implementado)
+
+`src/domain/enums/failure-code.ts` (renomeado de `failure-code.type.ts`): objeto `const` +
+tipo união derivado (`(typeof FailureCode)[keyof typeof FailureCode]`) em vez de `enum` TS —
+evita reverse-mapping e mantém o valor persistido como string simples na coluna
+`wager_transactions.failure_code`. Helper `isFailureCode(string)` para validar valores vindos
+do banco na reidratação.
+
+Taxonomia (12 códigos), todos estáveis e legíveis por máquina (seção 7.2):
+
+| code | quando | ação típica do provedor |
+|---|---|---|
+| `INSUFFICIENT_FUNDS` | `BET` sem saldo | não reenviar — saldo do jogador insuficiente |
+| `REVERSAL_WOULD_OVERDRAW` | `REFUND`/`ROLLBACK` deixaria saldo negativo (seção 7.9 — distinto de `INSUFFICIENT_FUNDS`) | investigar — estado inconsistente |
+| `CURRENCY_MISMATCH` | moeda da operação ≠ moeda da wallet | corrigir payload |
+| `IDEMPOTENCY_CONFLICT` | mesma `Idempotency-Key`, `payloadHash` diferente | corrigir payload ou a key |
+| `REFERENCE_REQUIRED` | `REFUND`/`ROLLBACK` sem `referenceExternalTransactionId` | corrigir payload |
+| `REFERENCE_NOT_FOUND` | referência não chegou dentro do TTL/limite de tentativas (seção 7.1) | reenviar a transação referenciada primeiro |
+| `REFERENCE_NOT_PROCESSED` | referência existe mas não está `PROCESSED` | aguardar / reenviar referência |
+| `REFERENCE_KIND_NOT_ALLOWED` | `REFUND`→não-`BET`, ou `ROLLBACK`→kind fora de {BET,WIN,REFUND} (regra 3) | corrigir payload |
+| `REFERENCE_CONTEXT_MISMATCH` | referência é de outro provider/player/wallet/currency/round (regra 2) | corrigir payload |
+| `REFERENCE_ALREADY_REVERSED` | referência já revertida pelo mesmo tipo de operação (regra 4) | não reenviar — já processado |
+| `AMOUNT_MISMATCH` | valor de `REFUND`/`ROLLBACK` ≠ valor da referência (regra 5, parcial fora de escopo) | corrigir payload |
+| `PERMANENT_INFRASTRUCTURE_ERROR` | erro permanente de infra ao aplicar (status `FAILED`, auditável) | acionar suporte |
+
+Hierarquia de erros:
+
+- `DomainError` (base, já existia) — erro de domínio genérico, tem `code: string`.
+- `WagerRejectionError extends DomainError` — marcador para **violação de regra de negócio**;
+  `code` estreitado para `FailureCode`. O caso de uso faz `catch (e) { if (e instanceof
+  WagerRejectionError) tx.reject(e.code) }` → status `REJECTED` → HTTP 422.
+  Concretos: `CurrencyMismatchError` (rebaseado), `InsufficientFundsError`,
+  `ReversalWouldOverdrawError`, `IdempotencyConflictError`, `ReferenceResolutionError`
+  (uma classe com factories estáticas `required()/notFound()/notProcessed()/kindNotAllowed()/
+  contextMismatch()/alreadyReversed()/amountMismatch()` — a família de resolução de referência
+  compartilha comportamento, só muda o code e a mensagem).
+- `WagerFailureError extends DomainError` — marcador para **erro permanente de infraestrutura**;
+  → `tx.fail(code)` → status `FAILED`. Concreto: `PermanentInfrastructureError`.
+- `InvalidMoneyError` e `InvalidTransactionStateError` **não** são rejeições — o primeiro é
+  payload inválido (HTTP 400), o segundo é erro de programação (transição a partir de estado
+  terminal); ambos seguem `DomainError` puro.
+
+23 testes em `src/domain/errors/wager-rejection.error.spec.ts`. `bun test`/`tsc`/`oxlint` limpos.
+
 ## Runtime: Bun
 
 - Exigência obrigatória do desafio (seção 4). MikroORM e o driver `pg` são compatíveis sem

@@ -2,7 +2,7 @@ import { Money, type MoneyProps } from './money.js';
 import type { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
 import type { WagerTransactionStatus } from '../enums/wager-transaction-status.enum.js';
 import type { LedgerDirection } from '../enums/ledger-direction.enum.js';
-import type { FailureCode } from '../enums/failure-code.type.js';
+import type { FailureCode } from '../enums/failure-code.js';
 
 export interface CreateWagerTransactionProps {
   id: string;

@@ -1,7 +1,8 @@
-import { DomainError } from './domain-error.js';
+import { FailureCode } from '../enums/failure-code.js';
+import { WagerRejectionError } from './wager-rejection.error.js';
 
-export class CurrencyMismatchError extends DomainError {
-  readonly code = 'CURRENCY_MISMATCH';
+export class CurrencyMismatchError extends WagerRejectionError {
+  readonly code = FailureCode.CurrencyMismatch;
 
   constructor(
     public readonly expected: string,
