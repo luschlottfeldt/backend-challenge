@@ -4,7 +4,8 @@ import type { IWalletLedgerEntryRepository } from '../../../domain/repositories/
 import type { WalletLedgerEntry } from '../../../domain/entities/wallet-ledger-entry.js';
 import { WalletLedgerEntryOrmEntity } from '../entities/wallet-ledger-entry.entity.js';
 import { walletLedgerEntryMapper } from '../mappers/wallet-ledger-entry.mapper.js';
-import { decodeLedgerCursor } from './ledger-cursor.js';
+import { decodeLedgerCursor } from '../../../application/pagination/ledger-cursor.js';
+import { persistOrConflict } from '../persist.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -33,10 +34,17 @@ export class WalletLedgerEntryRepository implements IWalletLedgerEntryRepository
     return rows.map((row) => walletLedgerEntryMapper.toDomain(row));
   }
 
+  async findByTransactionId(transactionId: string): Promise<WalletLedgerEntry | null> {
+    const row = await this.em.findOne(WalletLedgerEntryOrmEntity, { transactionId });
+    return row ? walletLedgerEntryMapper.toDomain(row) : null;
+  }
+
   async save(entry: WalletLedgerEntry): Promise<void> {
-    this.em.persist(
-      this.em.create(WalletLedgerEntryOrmEntity, walletLedgerEntryMapper.toPersistence(entry)),
-    );
-    await this.em.flush();
+    await persistOrConflict(async () => {
+      this.em.persist(
+        this.em.create(WalletLedgerEntryOrmEntity, walletLedgerEntryMapper.toPersistence(entry)),
+      );
+      await this.em.flush();
+    });
   }
 }

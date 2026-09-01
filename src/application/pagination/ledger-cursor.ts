@@ -1,4 +1,4 @@
-import { InvalidLedgerCursorError } from '../../../domain/errors/invalid-ledger-cursor.error.js';
+import { InvalidLedgerCursorError } from '../../domain/errors/invalid-ledger-cursor.error.js';
 
 export interface LedgerCursor {
   createdAt: Date;

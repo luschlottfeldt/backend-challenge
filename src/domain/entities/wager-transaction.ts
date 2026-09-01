@@ -6,6 +6,7 @@ import type { FailureCode } from '../enums/failure-code.js';
 import { InvalidTransactionStateError } from '../errors/invalid-transaction-state.error.js';
 import { InvalidLedgerEntryError } from '../errors/invalid-ledger-entry.error.js';
 import { ReferenceResolutionError } from '../errors/reference-resolution.error.js';
+import { exponentialBackoffDelayMs } from '../support/exponential-backoff.js';
 
 export interface CreateWagerTransactionProps {
   id: string;
@@ -177,6 +178,20 @@ export class WagerTransaction {
 
   markPendingReference(): void {
     this.transitionTo(WagerTransactionStatus.PendingReference);
+  }
+
+  scheduleReferenceCheck(now: Date): void {
+    if (this._status !== WagerTransactionStatus.PendingReference) {
+      throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.PendingReference);
+    }
+    this._referenceCheckAttempts += 1;
+    this._nextReferenceCheckAt = new Date(
+      now.getTime() + exponentialBackoffDelayMs(this._referenceCheckAttempts),
+    );
+  }
+
+  hasExhaustedReferenceChecks(maxAttempts: number): boolean {
+    return this._referenceCheckAttempts >= maxAttempts;
   }
 
   reject(code: FailureCode): void {

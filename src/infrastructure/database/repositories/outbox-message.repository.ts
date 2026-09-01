@@ -4,6 +4,7 @@ import type { IOutboxMessageRepository } from '../../../domain/repositories/outb
 import type { OutboxMessage } from '../../../domain/entities/outbox-message.js';
 import { OutboxMessageOrmEntity } from '../entities/outbox-message.entity.js';
 import { outboxMessageMapper } from '../mappers/outbox-message.mapper.js';
+import { persistOrConflict } from '../persist.js';
 
 @Injectable()
 export class OutboxMessageRepository implements IOutboxMessageRepository {
@@ -26,15 +27,17 @@ export class OutboxMessageRepository implements IOutboxMessageRepository {
   }
 
   async save(message: OutboxMessage): Promise<void> {
-    const row = outboxMessageMapper.toPersistence(message);
-    const existing = await this.em.findOne(OutboxMessageOrmEntity, { id: row.id });
+    await persistOrConflict(async () => {
+      const row = outboxMessageMapper.toPersistence(message);
+      const existing = await this.em.findOne(OutboxMessageOrmEntity, { id: row.id });
 
-    if (existing) {
-      this.em.assign(existing, row);
-    } else {
-      this.em.persist(this.em.create(OutboxMessageOrmEntity, row));
-    }
+      if (existing) {
+        this.em.assign(existing, row);
+      } else {
+        this.em.persist(this.em.create(OutboxMessageOrmEntity, row));
+      }
 
-    await this.em.flush();
+      await this.em.flush();
+    });
   }
 }

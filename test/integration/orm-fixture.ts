@@ -2,7 +2,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import config from '../../src/mikro-orm.config.js';
 
 export async function createTestOrm(): Promise<MikroORM> {
-  return MikroORM.init(config);
+  return MikroORM.init({ ...config, allowGlobalContext: true });
 }
 
 export async function truncateAll(orm: MikroORM): Promise<void> {
@@ -11,4 +11,5 @@ export async function truncateAll(orm: MikroORM): Promise<void> {
     .execute(
       'truncate table wallets, wager_transactions, wallet_ledger_entries, inbox_messages, outbox_messages cascade',
     );
+  orm.em.clear();
 }

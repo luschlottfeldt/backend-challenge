@@ -4,6 +4,7 @@ import type { IInboxMessageRepository } from '../../../domain/repositories/inbox
 import type { InboxMessage } from '../../../domain/entities/inbox-message.js';
 import { InboxMessageOrmEntity } from '../entities/inbox-message.entity.js';
 import { inboxMessageMapper } from '../mappers/inbox-message.mapper.js';
+import { persistOrConflict } from '../persist.js';
 
 @Injectable()
 export class InboxMessageRepository implements IInboxMessageRepository {
@@ -15,18 +16,20 @@ export class InboxMessageRepository implements IInboxMessageRepository {
   }
 
   async save(message: InboxMessage): Promise<void> {
-    const row = inboxMessageMapper.toPersistence(message);
-    const existing = await this.em.findOne(InboxMessageOrmEntity, {
-      consumerName: row.consumerName,
-      messageId: row.messageId,
+    await persistOrConflict(async () => {
+      const row = inboxMessageMapper.toPersistence(message);
+      const existing = await this.em.findOne(InboxMessageOrmEntity, {
+        consumerName: row.consumerName,
+        messageId: row.messageId,
+      });
+
+      if (existing) {
+        this.em.assign(existing, row);
+      } else {
+        this.em.persist(this.em.create(InboxMessageOrmEntity, row));
+      }
+
+      await this.em.flush();
     });
-
-    if (existing) {
-      this.em.assign(existing, row);
-    } else {
-      this.em.persist(this.em.create(InboxMessageOrmEntity, row));
-    }
-
-    await this.em.flush();
   }
 }

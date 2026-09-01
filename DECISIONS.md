@@ -151,6 +151,106 @@ Data Mapper, 5 repositórios reais, port de UoW. **111 testes unitários + 21 de
 (Postgres real via Docker Compose), `migration:check` limpo, `tsc`/`oxlint` limpos, `nest
 start` sobe sem erro de DI.
 
+## Bloco C — Casos de uso
+
+### Portas de aplicação (novas)
+
+`src/application/ports/`: `Clock` (`now()`), `IdGenerator` (`next()` → uuid), `Logger`
+(`info`/`warn`/`error` com contexto). Adapters triviais em `infrastructure/` (`SystemClock`,
+`UuidGenerator`, `LoggerAdapter` sobre o `StructuredLogger`). Motivo: manter `new Date()` /
+`crypto.randomUUID()` fora da lógica dos casos de uso → determinismo e testabilidade (o teste
+injeta um `MutableClock`). `ledger-cursor.ts` movido de `infrastructure/database/repositories/`
+para `application/pagination/` — é regra de paginação pura, e tanto o repo (`decode`) quanto o
+caso de uso `GetWalletLedger` (`encode` do `nextCursor`) precisam dela.
+
+### Tarefa 15 — `CreateWalletUseCase`
+
+Tudo dentro de `TransactionRunner.run`: checa `findByPlayerAndCurrency` (→
+`WalletAlreadyExistsError`, 409), `Wallet.open` (com ids/relógio injetados), `walletRepo.save`
+(se a unique `(player_id, currency)` estourar numa corrida → `PersistenceConflictError` →
+convertido em `WalletAlreadyExistsError`). Se `initialBalance > 0`: cria a `WagerTransaction`
+`OPENING` (`providerId: 'internal'`, `idempotencyKey: internal:opening:{walletId}`,
+`markProcessed`), grava ledger `CREDIT` e **dois** eventos de outbox (`WalletBalanceChanged` +
+`WagerTransactionProcessed`) — na mesma transação SQL. Retorna `{ id, playerId, balance,
+version: 1 }`.
+
+### Tarefa 16 — `SubmitWagerTransactionUseCase` (núcleo) + `WagerTransactionProcessor`
+
+A lógica compartilhada entre HTTP/SQS/reprocessamento vive em
+`application/services/WagerTransactionProcessor.process(tx, wallet, ctx)`, que **nunca lança
+para rejeição de negócio** — retorna `{ status: PROCESSED | REJECTED | PENDING_REFERENCE,
+balance, failureCode? }` e persiste tx + ledger + wallet + eventos conforme o caminho.
+
+Fluxo do `Submit` (dentro de `run`):
+1. `payloadHash` calculado antes da transação.
+2. **Idempotência**: `findByIdempotencyKey`. Se existe e `matchesPayload` → **replay**
+   (`idempotentReplay: true`), com o **saldo observado naquele momento** =
+   `ledgerRepo.findByTransactionId(tx.id).balanceAfter` (ou saldo atual da wallet se a tx não
+   gerou lançamento — `LOSS`/`REJECTED`/`PENDING_REFERENCE`). Se existe e **não** casa o
+   payload → `IdempotencyConflictError` (409).
+3. `walletRepo.findByIdForUpdate` (`SELECT … FOR UPDATE`) → serializa por `walletId`. Ausente →
+   `WalletNotFoundError` (404).
+4. `WagerTransaction.create` (lança `ReferenceResolutionError.required()` p/ `REFUND`/`ROLLBACK`
+   sem referência → 422, **não persistido** — é payload malformado, não desfecho de negócio).
+5. `processor.process`: moeda → referência → efeito no saldo → grava tudo + eventos.
+6. `catch PersistenceConflictError` na corrida de idempotency key entre wallets distintas →
+   re-lê e devolve replay/conflito.
+
+**Resolução de referência** (`processor.resolveReference`): lookup por
+`(providerId, referenceExternalTransactionId)`; contexto (`player`/`wallet`/`round`/`currency`)
+→ `REFERENCE_CONTEXT_MISMATCH`; não-`PROCESSED` e terminal → `REFERENCE_NOT_PROCESSED`,
+não-`PROCESSED` e não-terminal → tratado como **ausente** (espera); kind da referência fora do
+permitido (`REFUND`→`BET`; `ROLLBACK`→`BET`/`WIN`/`REFUND`) → `REFERENCE_KIND_NOT_ALLOWED`;
+valor ≠ → `AMOUNT_MISMATCH`; `findProcessedReversal(ref.id, kind)` acha uma reversão já
+aplicada → `REFERENCE_ALREADY_REVERSED`.
+
+**Efeito no saldo**: `tx.ledgerDirectionFor(reference)`; débito que estouraria o saldo →
+`INSUFFICIENT_FUNDS` (`BET`) ou `REVERSAL_WOULD_OVERDRAW` (`ROLLBACK`/`REFUND`) — decidido pelo
+processor via `wallet.canDebit` **antes** de mutar. `LOSS` não move saldo (só evento
+`WagerTransactionProcessed`).
+
+### Tarefa 17 — consultas
+
+`GetWalletUseCase`, `GetWalletLedgerUseCase` (monta `nextCursor` quando a página encheu),
+`GetWagerTransactionUseCase` (`byId` / `byProviderAndExternalId`). Not-found → 404
+(`WalletNotFoundError` / `WagerTransactionNotFoundError`). Views em `use-cases/views.ts`
+(`MoneyProps`, datas ISO).
+
+### Tarefa 18 — `ReconcileWalletUseCase`
+
+Recalcula o saldo iterando **todo** o ledger via cursor (páginas de 200), `Σ credit − Σ debit`.
+`difference = stored − calculated` (pode ser negativo — string tipo `"-5.00"`), `consistent =
+difference.isZero()`. Divergência → `logger.warn` estruturado (métrica fica pro Bloco F), nunca
+corrige. Retorna `{ storedBalance, calculatedBalance, difference, consistent, checkedEntries }`.
+
+### Tarefa 19 — `ReprocessPendingReferencesUseCase` + backoff em `WagerTransaction`
+
+`WagerTransaction` ganhou `scheduleReferenceCheck(now)` (incrementa `referenceCheckAttempts`,
+`nextReferenceCheckAt = now + backoff(attempts)` — reusa `exponentialBackoffDelayMs`, 5s base,
+2×, cap 1h) e `hasExhaustedReferenceChecks(max)`. **Limite = 10 tentativas**
+(≈ 5s+10s+…+2560s ≈ 85 min de janela) — justificado: cobre atrasos realistas de entrega
+fora de ordem sem segurar a transação para sempre. Esgotado → `reject(REFERENCE_NOT_FOUND)` +
+evento.
+
+O caso de uso: `findPendingReference(now, batch)` → para **cada** candidato, um
+`runner.run` próprio: re-`findById` (se não é mais `PENDING_REFERENCE`, outro worker já tratou →
+`skipped`), `findByIdForUpdate` da wallet, `processor.process` (que detecta `isRetry` pelo
+status `PENDING_REFERENCE` e faz `scheduleReferenceCheck` em vez de `markPendingReference`).
+
+### Nota de teste — `allowGlobalContext`
+
+Em produção o `@mikro-orm/nestjs` embrulha cada request num `RequestContext`, então `orm.em`
+nos casos de uso resolve para um fork por request. Nos testes de integração, os casos de uso de
+**consulta** (sem `runner.run`) rodariam no em global → o MikroORM barra. Solução no
+`createTestOrm`: `allowGlobalContext: true` + `orm.em.clear()` no `beforeEach` (e no único teste
+que altera o banco por fora, um `clear()` extra). Não afeta produção — `mikro-orm.config.ts`
+não tem a flag.
+
+**Bloco C:** 3 portas + 3 adapters, `WagerTransactionProcessor`, 7 casos de uso.
+`PersistenceConflictError` + `persistOrConflict` nos 5 repos (unique violation → erro de
+domínio). **114 testes unitários + 42 de integração**, `tsc`/`oxlint`/`migration:check`
+limpos, `nest start` sobe sem erro de DI.
+
 ## Estrutura do projeto
 
 - O código do desafio vive dentro desta pasta (`backend-challenge/`), que já é seu próprio

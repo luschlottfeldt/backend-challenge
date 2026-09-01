@@ -4,6 +4,7 @@ import type { IWalletRepository } from '../../../domain/repositories/wallet.repo
 import type { Wallet } from '../../../domain/entities/wallet.js';
 import { WalletOrmEntity } from '../entities/wallet.entity.js';
 import { walletMapper } from '../mappers/wallet.mapper.js';
+import { persistOrConflict } from '../persist.js';
 
 @Injectable()
 export class WalletRepository implements IWalletRepository {
@@ -25,15 +26,17 @@ export class WalletRepository implements IWalletRepository {
   }
 
   async save(wallet: Wallet): Promise<void> {
-    const row = walletMapper.toPersistence(wallet);
-    const existing = await this.em.findOne(WalletOrmEntity, { id: row.id });
+    await persistOrConflict(async () => {
+      const row = walletMapper.toPersistence(wallet);
+      const existing = await this.em.findOne(WalletOrmEntity, { id: row.id });
 
-    if (existing) {
-      this.em.assign(existing, row);
-    } else {
-      this.em.persist(this.em.create(WalletOrmEntity, row));
-    }
+      if (existing) {
+        this.em.assign(existing, row);
+      } else {
+        this.em.persist(this.em.create(WalletOrmEntity, row));
+      }
 
-    await this.em.flush();
+      await this.em.flush();
+    });
   }
 }

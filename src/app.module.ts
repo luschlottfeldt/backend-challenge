@@ -18,7 +18,21 @@ import { SqsHealthIndicator } from './infrastructure/messaging/sqs-health.indica
 import { SQS_CLIENT, createSqsClient } from './infrastructure/messaging/sqs-client.provider.js';
 import { StructuredLogger } from './infrastructure/logger/structured-logger.service.js';
 import { MikroOrmTransactionRunner } from './infrastructure/database/mikro-orm-transaction-runner.js';
+import { SystemClock } from './infrastructure/clock/system-clock.js';
+import { UuidGenerator } from './infrastructure/id/uuid-generator.js';
+import { LoggerAdapter } from './infrastructure/logger/logger.adapter.js';
 import { TRANSACTION_RUNNER } from './application/ports/transaction-runner.js';
+import { CLOCK } from './application/ports/clock.js';
+import { ID_GENERATOR } from './application/ports/id-generator.js';
+import { LOGGER } from './application/ports/logger.js';
+import { WagerTransactionProcessor } from './application/services/wager-transaction-processor.js';
+import { CreateWalletUseCase } from './application/use-cases/create-wallet.use-case.js';
+import { SubmitWagerTransactionUseCase } from './application/use-cases/submit-wager-transaction.use-case.js';
+import { GetWalletUseCase } from './application/use-cases/get-wallet.use-case.js';
+import { GetWalletLedgerUseCase } from './application/use-cases/get-wallet-ledger.use-case.js';
+import { GetWagerTransactionUseCase } from './application/use-cases/get-wager-transaction.use-case.js';
+import { ReconcileWalletUseCase } from './application/use-cases/reconcile-wallet.use-case.js';
+import { ReprocessPendingReferencesUseCase } from './application/use-cases/reprocess-pending-references.use-case.js';
 import {
   WALLET_REPOSITORY,
   WAGER_TRANSACTION_REPOSITORY,
@@ -45,6 +59,17 @@ import {
     { provide: INBOX_MESSAGE_REPOSITORY, useClass: InboxMessageRepository },
     { provide: OUTBOX_MESSAGE_REPOSITORY, useClass: OutboxMessageRepository },
     { provide: TRANSACTION_RUNNER, useClass: MikroOrmTransactionRunner },
+    { provide: CLOCK, useClass: SystemClock },
+    { provide: ID_GENERATOR, useClass: UuidGenerator },
+    { provide: LOGGER, useClass: LoggerAdapter },
+    WagerTransactionProcessor,
+    CreateWalletUseCase,
+    SubmitWagerTransactionUseCase,
+    GetWalletUseCase,
+    GetWalletLedgerUseCase,
+    GetWagerTransactionUseCase,
+    ReconcileWalletUseCase,
+    ReprocessPendingReferencesUseCase,
     { provide: APP_FILTER, useClass: DomainExceptionFilter },
   ],
 })

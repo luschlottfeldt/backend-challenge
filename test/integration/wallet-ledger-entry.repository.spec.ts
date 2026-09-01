@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { createTestOrm, truncateAll } from './orm-fixture.js';
 import { WalletLedgerEntryRepository } from '../../src/infrastructure/database/repositories/wallet-ledger-entry.repository.js';
-import { encodeLedgerCursor } from '../../src/infrastructure/database/repositories/ledger-cursor.js';
+import { encodeLedgerCursor } from '../../src/application/pagination/ledger-cursor.js';
 import { WalletLedgerEntry } from '../../src/domain/entities/wallet-ledger-entry.js';
 import { Money } from '../../src/domain/entities/money.js';
 import { LedgerDirection } from '../../src/domain/enums/ledger-direction.enum.js';

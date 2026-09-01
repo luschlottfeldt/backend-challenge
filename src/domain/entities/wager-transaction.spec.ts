@@ -155,6 +155,40 @@ describe('WagerTransaction state machine', () => {
   });
 });
 
+describe('WagerTransaction reference-check backoff', () => {
+  const pending = () => {
+    const tx = create({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'r' });
+    tx.markPendingReference();
+    return tx;
+  };
+
+  it('increments attempts and pushes nextReferenceCheckAt out exponentially', () => {
+    const tx = pending();
+    expect(tx.referenceCheckAttempts).toBe(0);
+
+    tx.scheduleReferenceCheck(NOW);
+    expect(tx.referenceCheckAttempts).toBe(1);
+    expect(tx.nextReferenceCheckAt).toEqual(new Date(NOW.getTime() + 5_000));
+
+    tx.scheduleReferenceCheck(NOW);
+    expect(tx.referenceCheckAttempts).toBe(2);
+    expect(tx.nextReferenceCheckAt).toEqual(new Date(NOW.getTime() + 10_000));
+  });
+
+  it('reports exhaustion at the configured ceiling', () => {
+    const tx = pending();
+    for (let i = 0; i < 10; i += 1) {
+      tx.scheduleReferenceCheck(NOW);
+    }
+    expect(tx.hasExhaustedReferenceChecks(10)).toBe(true);
+    expect(tx.hasExhaustedReferenceChecks(11)).toBe(false);
+  });
+
+  it('cannot be scheduled unless PENDING_REFERENCE', () => {
+    expect(() => create().scheduleReferenceCheck(NOW)).toThrow(InvalidTransactionStateError);
+  });
+});
+
 describe('WagerTransaction.rehydrate', () => {
   it('restores a terminal persisted transaction without revalidation', () => {
     const tx = WagerTransaction.rehydrate({
