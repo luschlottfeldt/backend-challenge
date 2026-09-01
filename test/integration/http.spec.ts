@@ -12,6 +12,10 @@ const player = () => crypto.randomUUID();
 const brl = (amount: string) => ({ amount, currency: 'BRL' });
 
 beforeAll(async () => {
+  process.env.OUTBOX_PUBLISHER_ENABLED = 'false';
+  process.env.SQS_CONSUMER_ENABLED = 'false';
+  process.env.REFERENCE_REPROCESS_ENABLED = 'false';
+
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication();
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));

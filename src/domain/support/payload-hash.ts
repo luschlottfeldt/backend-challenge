@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
 import { Money, type MoneyProps } from '../entities/money.js';
 import type { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
 import { canonicalJsonStringify } from './canonical-json.js';
+import { sha256Hex } from './sha256.js';
 
 export interface WagerTransactionBusinessPayload {
   providerId: string;
@@ -29,8 +29,4 @@ export function hashWagerTransactionPayload(payload: WagerTransactionBusinessPay
   };
 
   return sha256Hex(canonicalJsonStringify(normalized));
-}
-
-function sha256Hex(input: string): string {
-  return createHash('sha256').update(input, 'utf8').digest('hex');
 }

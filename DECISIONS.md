@@ -304,6 +304,96 @@ porque `IdempotencyConflictError` estende `WagerRejectionError`:
 **Bloco D:** 2 controllers reais, filtro de exceção com mapa completo, **114 unitários + 54 de
 integração**, `tsc`/`oxlint` limpos.
 
+## Bloco E — Mensageria
+
+### Tarefa 22 — worker publicador do outbox
+
+- **Fila de destino:** os eventos de integração (saída) vão para uma fila FIFO dedicada
+  `integration-events.fifo` (+ `integration-events-dlq.fifo`, `maxReceiveCount 5`), **separada**
+  da `wager-transactions.fifo` que é a fila de *entrada* (seção 10). Script
+  `docker/localstack/init/01-create-queues.sh` refatorado numa função `create_fifo_with_dlq` e
+  cria os dois pares. Novas envs: `SQS_INTEGRATION_EVENTS_QUEUE_URL` / `_DLQ_URL`,
+  `OUTBOX_POLL_INTERVAL_MS` (default 1000).
+- **Porta** `MessagePublisher` (`application/ports`, `OutboundMessage { id, type, body, groupId,
+  deduplicationId }`) + adapter `SqsMessagePublisher` (`infrastructure/messaging`). `MessageGroupId
+  = aggregateId` (ordenação por agregado), `MessageDeduplicationId = eventId` — publicação
+  duplicada é absorvida pela dedup FIFO da SQS dentro da janela de 5 min, e o consumidor ainda
+  deduplica pelo inbox de qualquer forma.
+- **`OutboxPublisher.runOnce(batchSize = 10)`** (`application/workers`): um único `runner.run`
+  → `outbox.findDue(now, batch)` (já usa `FOR UPDATE SKIP LOCKED`) → para cada mensagem:
+  `publisher.publish` + `markPublished(now)` em caso de sucesso, `scheduleRetry(now)` (backoff
+  exponencial, sem teto) em falha; `outbox.save` no fim. Retorna `{ claimed, published, retried }`.
+- **Por que publicar dentro da transação que segura os locks:** se o processo morre no meio do
+  lote, a transação inteira aborta, **todas** as linhas voltam a `pending` (mesmo as já enviadas
+  à SQS) e são republicadas depois — cobre o cenário 2→5 da seção 11 (commit → morte antes de
+  publicar → outra instância assume → publicação duplicada é segura). O custo é segurar os locks
+  durante I/O externo; mitigado pelo `batchSize` pequeno (10) e pelo `SKIP LOCKED`, que deixa
+  outros publishers pegarem linhas diferentes em paralelo.
+- **Agendamento:** `OutboxPublisherScheduler` (`infrastructure/workers`,
+  `OnApplicationBootstrap` / `OnModuleDestroy`) com `setInterval` (`unref`), guarda contra
+  execuções sobrepostas (`running`), e no shutdown limpa o timer e espera o tick em andamento
+  terminar. Sem `@nestjs/schedule` — um timer com lifecycle é suficiente e sem dependência nova.
+  `OUTBOX_PUBLISHER_ENABLED=false` desliga (útil para rodar o publisher em processo separado —
+  decisão da tarefa 24).
+- `runner.run` (= `em.transactional`) funciona fora de um request HTTP: o `em.transactional`
+  forka o EM e estabelece o contexto do callback, então os repos resolvem para o fork mesmo sem
+  o `RequestContext` do `@mikro-orm/nestjs`. Validado no boot (`bun run start`: "outbox publisher
+  started", sem erros de contexto) e em `test/integration/outbox-publisher.spec.ts` (4 casos:
+  publica e marca, backoff em falha, dois publishers concorrentes sem perda/duplicata, mensagem
+  já publicada não reenviada).
+
+### Tarefa 23 — consumidor SQS + inbox persistente
+
+- **Parser** `parseWagerTransactionMessage(rawBody)` (`application/messaging`): valida o envelope
+  (`messageId`, `type = WagerTransactionRequested`, `data`) e os campos de negócio, monta um
+  `SubmitWagerTransactionCommand` (`idempotencyKey` = campo do payload ou
+  `{providerId}:{externalTransactionId}`; `correlationId` = idempotencyKey; `causationId` =
+  messageId). Erro de forma → `MalformedMessageError` (permanente).
+- **`InboundWagerTransactionHandler.handle(rawBody)`** (`application/messaging`): um único
+  `runner.run` → checa `inbox.findByMessageId('wager-transactions-consumer', messageId)`;
+  processado → `{ status: 'duplicate' }`; senão `submitUseCase.execute(command)` (o
+  `em.transactional` aninhado vira **savepoint** na mesma transação — confirmado nos logs:
+  `savepoint "trx1"` / `release savepoint "trx1"`), depois `InboxMessage.markProcessed` +
+  `inbox.save` **no mesmo commit**. Atomicidade da seção 11 garantida: qualquer falha depois do
+  savepoint desfaz tudo (transação + ledger + saldo + outbox + inbox).
+- **`SqsWagerTransactionConsumer`** (`infrastructure/messaging`, `OnApplicationBootstrap` /
+  `OnModuleDestroy`): loop de long-polling (`pollOnce()` extraído para teste). Classificação de
+  erro no `consume(message)`:
+  - sucesso (inclui rejeição de negócio, que o use case **retorna**, não lança) → `DeleteMessage` (ack);
+  - `MalformedMessageError` ou `DomainError` (ex. `WalletNotFoundError`, `IdempotencyConflictError`)
+    → permanente → `SendMessage` para a DLQ + `DeleteMessage` da fila principal;
+  - qualquer outro erro (rede, banco, lock) → transitório → **não** deleta → a mensagem volta a
+    ficar visível após o visibility timeout e é reentregue; após `maxReceiveCount = 5` a própria
+    SQS faz o redrive para a DLQ.
+- **`SIGTERM`:** `main.ts` chama `app.enableShutdownHooks()`. `onModuleDestroy` seta `stopping` e
+  faz `await this.loop`; a mensagem em processamento termina (commit + delete) antes do loop sair;
+  mensagens já recebidas no mesmo lote e ainda não iniciadas não são deletadas → voltam à
+  visibilidade. Redelivery nunca duplica efeito (inbox + idempotency key).
+- **Dedup/`payloadHash`:** `sha256Hex` extraído para `domain/support/sha256.ts` (reusado pelo
+  `payload-hash.ts`). O inbox guarda o hash do corpo bruto da mensagem.
+- Testes: `test/integration/sqs-consumer.spec.ts` (5 casos contra Postgres + LocalStack reais:
+  BET aplicado uma vez, redelivery não reaplica, rejeição de negócio dá ack, malformada → DLQ,
+  wallet inexistente → DLQ).
+
+### Tarefa 24 — entrypoint de processo
+
+- **Processo único** por padrão: a API HTTP, o publicador do outbox, o consumidor SQS e o worker
+  de reprocessamento de referências rodam todos no mesmo `AppModule`. Cada worker é ligável por
+  env, então dá para rodar N réplicas com papéis diferentes sem mudar código:
+  `OUTBOX_PUBLISHER_ENABLED`, `SQS_CONSUMER_ENABLED`, `REFERENCE_REPROCESS_ENABLED`
+  (`=false` desliga). As envs são lidas em `onApplicationBootstrap`, não no load do módulo
+  (testável, e permite os testes de HTTP subirem o `AppModule` sem os workers concorrerem pelas
+  filas).
+- **`ReferenceReprocessScheduler`** (`infrastructure/workers`): mesmo padrão de timer com
+  lifecycle do `OutboxPublisherScheduler`, chama `ReprocessPendingReferencesUseCase` a cada
+  `REFERENCE_REPROCESS_INTERVAL_MS` (default 5s). O use case teve o `findPendingReference`
+  inicial embrulhado num `runner.run` — fora de um request HTTP não há `RequestContext`, então
+  toda leitura precisa abrir sua própria transação.
+
+**Bloco E (22–24):** fila de saída dedicada, `OutboxPublisher` + scheduler, parser/handler/consumer
+SQS com inbox atômico e classificação de erro, 4 workers no processo único ligáveis por env.
+**114 unitários + 63 de integração**, `tsc`/`oxlint` limpos, boot sobe os 4 workers sem erro.
+
 ## Estrutura do projeto
 
 - O código do desafio vive dentro desta pasta (`backend-challenge/`), que já é seu próprio

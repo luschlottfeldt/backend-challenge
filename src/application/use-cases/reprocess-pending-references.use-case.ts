@@ -34,7 +34,9 @@ export class ReprocessPendingReferencesUseCase {
   ) {}
 
   async execute(batchSize = DEFAULT_BATCH_SIZE): Promise<ReprocessPendingReferencesResult> {
-    const candidates = await this.transactions.findPendingReference(this.clock.now(), batchSize);
+    const candidates = await this.runner.run(() =>
+      this.transactions.findPendingReference(this.clock.now(), batchSize),
+    );
     const result: ReprocessPendingReferencesResult = {
       candidates: candidates.length,
       processed: 0,

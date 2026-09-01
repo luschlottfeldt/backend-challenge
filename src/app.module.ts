@@ -16,6 +16,13 @@ import { OutboxMessageRepository } from './infrastructure/database/repositories/
 import { DatabaseHealthIndicator } from './infrastructure/database/database-health.indicator.js';
 import { SqsHealthIndicator } from './infrastructure/messaging/sqs-health.indicator.js';
 import { SQS_CLIENT, createSqsClient } from './infrastructure/messaging/sqs-client.provider.js';
+import { SqsMessagePublisher } from './infrastructure/messaging/sqs-message-publisher.js';
+import { SqsWagerTransactionConsumer } from './infrastructure/messaging/sqs-wager-transaction-consumer.js';
+import { OutboxPublisher } from './application/workers/outbox-publisher.js';
+import { OutboxPublisherScheduler } from './infrastructure/workers/outbox-publisher.scheduler.js';
+import { ReferenceReprocessScheduler } from './infrastructure/workers/reference-reprocess.scheduler.js';
+import { InboundWagerTransactionHandler } from './application/messaging/inbound-wager-transaction.handler.js';
+import { MESSAGE_PUBLISHER } from './application/ports/message-publisher.js';
 import { StructuredLogger } from './infrastructure/logger/structured-logger.service.js';
 import { MikroOrmTransactionRunner } from './infrastructure/database/mikro-orm-transaction-runner.js';
 import { SystemClock } from './infrastructure/clock/system-clock.js';
@@ -53,6 +60,17 @@ import {
     DatabaseHealthIndicator,
     SqsHealthIndicator,
     { provide: SQS_CLIENT, useFactory: createSqsClient },
+    {
+      provide: MESSAGE_PUBLISHER,
+      useFactory: (sqs: ReturnType<typeof createSqsClient>) =>
+        new SqsMessagePublisher(sqs, process.env.SQS_INTEGRATION_EVENTS_QUEUE_URL ?? ''),
+      inject: [SQS_CLIENT],
+    },
+    OutboxPublisher,
+    OutboxPublisherScheduler,
+    InboundWagerTransactionHandler,
+    SqsWagerTransactionConsumer,
+    ReferenceReprocessScheduler,
     { provide: WALLET_REPOSITORY, useClass: WalletRepository },
     { provide: WAGER_TRANSACTION_REPOSITORY, useClass: WagerTransactionRepository },
     { provide: WALLET_LEDGER_ENTRY_REPOSITORY, useClass: WalletLedgerEntryRepository },
