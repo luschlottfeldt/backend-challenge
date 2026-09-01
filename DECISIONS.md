@@ -451,6 +451,28 @@ Hierarquia de erros:
 
 23 testes em `src/domain/errors/wager-rejection.error.spec.ts`. `bun test`/`tsc`/`oxlint` limpos.
 
+### Tarefa 3 — `WalletLedgerEntry` (implementado)
+
+Lançamento imutável: só `readonly`, sem métodos de transição (imutabilidade estrutural,
+seção 6.4).
+
+- `create` valida: (1) `money` estritamente positivo — a direção carrega o sinal, o valor é
+  sempre magnitude absoluta; operações sem efeito no saldo não geram lançamento, então valor
+  zero é inválido; (2) `isBalanced()` — `balanceBefore − money === balanceAfter` para `DEBIT`,
+  `+` para `CREDIT`. Qualquer falha → `InvalidLedgerEntryError` (`DomainError`,
+  `INVALID_LEDGER_ENTRY`) — é violação de invariante / erro de programação, não rejeição de
+  negócio.
+- `isBalanced()` é um predicado puro que **não lança**: se as três moedas (`money`,
+  `balanceBefore`, `balanceAfter`) não baterem, retorna `false` (e `create` converte isso em
+  `InvalidLedgerEntryError`), em vez de deixar vazar `CurrencyMismatchError` do `Money`.
+- `rehydrate` **não** revalida (regra 6.0) — reconstrói via `Money.from` de cada `MoneyProps`.
+  Teste cobre reidratar um estado aritmeticamente "quebrado" para provar que a factory de
+  reidratação não rejeita.
+- Sem checagem de não-negatividade de `balanceAfter` aqui: é invariante da `Wallet`
+  (`REVERSAL_WOULD_OVERDRAW` / `INSUFFICIENT_FUNDS` são rejeitados antes de gerar lançamento).
+
+6 testes em `src/domain/entities/wallet-ledger-entry.spec.ts`.
+
 ## Runtime: Bun
 
 - Exigência obrigatória do desafio (seção 4). MikroORM e o driver `pg` são compatíveis sem
