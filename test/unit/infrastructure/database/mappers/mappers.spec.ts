@@ -56,10 +56,21 @@ describe('wagerTransactionMapper', () => {
     expect(row.failureCode).toBeNull();
     expect(row.processedAt).toBeNull();
     expect(row.referenceCheckAttempts).toBe(0);
+    expect(row.resultBalanceAmount).toBeNull();
     const back = wagerTransactionMapper.toDomain(row);
     expect(back.status).toBe(WagerTransactionStatus.Pending);
     expect(back.failureCode).toBeUndefined();
+    expect(back.resultBalance).toBeUndefined();
     expect(back.money.toString()).toBe('25.00');
+  });
+
+  it('round-trips the recorded result balance', () => {
+    const tx = build();
+    tx.recordResultBalance(brl('975.00'));
+    tx.markProcessed(undefined, NOW);
+    const row = wagerTransactionMapper.toPersistence(tx);
+    expect(row.resultBalanceAmount).toBe('975.00');
+    expect(wagerTransactionMapper.toDomain(row).resultBalance?.toString()).toBe('975.00');
   });
 
   it('round-trips a terminal REJECTED transaction', () => {

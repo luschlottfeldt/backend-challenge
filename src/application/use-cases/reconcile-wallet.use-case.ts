@@ -68,10 +68,8 @@ export class ReconcileWalletUseCase {
       this.metrics.reconciliationDivergence();
       this.logger.warn('wallet reconciliation divergence detected', {
         walletId,
-        storedBalance: storedBalance.toString(),
-        calculatedBalance: calculated.toString(),
-        difference: difference.toString(),
         checkedEntries,
+        direction: difference.isNegative() ? 'stored-below-ledger' : 'stored-above-ledger',
       });
     }
 

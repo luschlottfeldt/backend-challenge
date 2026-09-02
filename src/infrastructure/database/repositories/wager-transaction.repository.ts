@@ -7,6 +7,10 @@ import type { WagerTransactionKind } from '../../../domain/enums/wager-transacti
 import { WagerTransactionOrmEntity } from '../entities/wager-transaction.entity.js';
 import { wagerTransactionMapper } from '../mappers/wager-transaction.mapper.js';
 import { persistOrConflict } from '../persist.js';
+import { PersistenceConflictError } from '../../../domain/errors/persistence-conflict.error.js';
+import { ReferenceResolutionError } from '../../../domain/errors/reference-resolution.error.js';
+
+const REVERSAL_UNIQUE_CONSTRAINT = 'wager_transactions_reference_transaction_id_kind_unique';
 
 @Injectable()
 export class WagerTransactionRepository implements IWagerTransactionRepository {
@@ -58,17 +62,27 @@ export class WagerTransactionRepository implements IWagerTransactionRepository {
   }
 
   async save(transaction: WagerTransaction): Promise<void> {
-    await persistOrConflict(async () => {
-      const row = wagerTransactionMapper.toPersistence(transaction);
-      const existing = await this.em.findOne(WagerTransactionOrmEntity, { id: row.id });
+    try {
+      await persistOrConflict(async () => {
+        const row = wagerTransactionMapper.toPersistence(transaction);
+        const existing = await this.em.findOne(WagerTransactionOrmEntity, { id: row.id });
 
-      if (existing) {
-        this.em.assign(existing, row);
-      } else {
-        this.em.persist(this.em.create(WagerTransactionOrmEntity, row));
+        if (existing) {
+          this.em.assign(existing, row);
+        } else {
+          this.em.persist(this.em.create(WagerTransactionOrmEntity, row));
+        }
+
+        await this.em.flush();
+      });
+    } catch (error) {
+      if (
+        error instanceof PersistenceConflictError &&
+        error.constraint === REVERSAL_UNIQUE_CONSTRAINT
+      ) {
+        throw ReferenceResolutionError.alreadyReversed();
       }
-
-      await this.em.flush();
-    });
+      throw error;
+    }
   }
 }

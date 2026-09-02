@@ -571,7 +571,7 @@
           "autoincrement": false,
           "primary": false,
           "nullable": true,
-          "unique": false,
+          "unique": true,
           "length": null,
           "precision": null,
           "scale": null,
@@ -580,6 +580,23 @@
           "collation": null,
           "enumItems": [],
           "mappedType": "uuid"
+        },
+        "result_balance_amount": {
+          "name": "result_balance_amount",
+          "type": "numeric(19,2)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": 19,
+          "scale": 2,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "decimal"
         },
         "round_id": {
           "name": "round_id",
@@ -680,6 +697,17 @@
           "keyName": "wager_transactions_reference_transaction_id_index",
           "primary": false,
           "unique": false
+        },
+        {
+          "columnNames": [
+            "reference_transaction_id",
+            "kind"
+          ],
+          "composite": true,
+          "constraint": true,
+          "keyName": "wager_transactions_reference_transaction_id_kind_unique",
+          "primary": false,
+          "unique": true
         },
         {
           "columnNames": [
@@ -915,7 +943,26 @@
           "columnName": "direction"
         }
       ],
-      "triggers": [],
+      "triggers": [
+        {
+          "name": "wallet_ledger_entries_forbid_delete",
+          "timing": "before",
+          "events": [
+            "delete"
+          ],
+          "forEach": "row",
+          "body": ""
+        },
+        {
+          "name": "wallet_ledger_entries_forbid_update",
+          "timing": "before",
+          "events": [
+            "update"
+          ],
+          "forEach": "row",
+          "body": ""
+        }
+      ],
       "foreignKeys": {},
       "comment": null
     },

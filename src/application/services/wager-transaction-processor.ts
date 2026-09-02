@@ -134,6 +134,7 @@ export class WagerTransactionProcessor {
       );
     }
 
+    transaction.recordResultBalance(wallet.balance);
     transaction.markProcessed(reference?.id, context.now);
     await this.transactions.save(transaction);
     await this.outbox.save(
@@ -208,6 +209,7 @@ export class WagerTransactionProcessor {
       transaction.markPendingReference();
     }
     transaction.scheduleReferenceCheck(context.now);
+    transaction.recordResultBalance(wallet.balance);
     await this.transactions.save(transaction);
     this.metrics.retryScheduled('reference');
     if (!isRetry) {
@@ -235,6 +237,7 @@ export class WagerTransactionProcessor {
     context: ProcessContext,
   ): Promise<ProcessOutcome> {
     transaction.reject(failureCode);
+    transaction.recordResultBalance(wallet.balance);
     await this.transactions.save(transaction);
     await this.outbox.save(
       OutboxMessage.enqueue(

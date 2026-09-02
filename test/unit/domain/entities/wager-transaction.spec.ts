@@ -201,4 +201,20 @@ describe('WagerTransaction.rehydrate', () => {
     expect(tx.failureCode).toBe(FailureCode.ReferenceNotFound);
     expect(tx.isTerminal()).toBe(true);
   });
+
+  it('carries the recorded result balance through persistence', () => {
+    const tx = WagerTransaction.create(props());
+    expect(tx.resultBalance).toBeUndefined();
+
+    tx.recordResultBalance(Money.from({ amount: '75.00', currency: 'BRL' }));
+    expect(tx.resultBalance?.toString()).toBe('75.00');
+
+    const rehydrated = WagerTransaction.rehydrate({
+      ...props(),
+      money: { amount: '25.00', currency: 'BRL' },
+      status: WagerTransactionStatus.Processed,
+      resultBalance: { amount: '75.00', currency: 'BRL' },
+    });
+    expect(rehydrated.resultBalance?.toString()).toBe('75.00');
+  });
 });

@@ -1077,3 +1077,202 @@ seção 6.4).
 - Versão instalada e usada no projeto: **Bun 1.4.0** (instalada via `curl -fsSL https://bun.sh/install | bash`).
 - Test runner: `bun test` (nativo do Bun), substituindo o Vitest gerado por padrão pelo
   `@nestjs/cli` 12 — necessário para atender a exigência de que Bun seja também o test runner.
+
+## Revisão pós-entrega — Bloco A: garantias no schema (restrição 9)
+
+Uma revisão crítica final apontou que duas garantias da seção 6 estavam aplicadas **só em
+código de aplicação**, enquanto a restrição inviolável nº9 exige que unicidade, imutabilidade e
+não-negatividade sejam aplicadas **no schema do banco**. Não-negatividade
+(`check (balance_amount >= 0)`) e as uniques de identidade já estavam no schema; faltavam:
+
+### Imutabilidade do ledger no schema
+
+`Migration20260902135118` adiciona a função `forbid_wallet_ledger_entry_mutation()` e dois
+triggers `BEFORE UPDATE` / `BEFORE DELETE` em `wallet_ledger_entries` que sempre lançam
+(`restrict_violation`). Antes, o append-only só era garantido por o repositório não ter caminho
+de `UPDATE`/`DELETE`. Agora qualquer tentativa — inclusive SQL cru fora da aplicação — falha no
+banco. `TRUNCATE ... CASCADE` (usado no teardown dos testes) não dispara triggers de linha,
+então a limpeza dos testes continua funcionando.
+
+### Reversão única por tipo no schema (regra 7.4)
+
+A regra "uma referência não pode ser revertida duas vezes pelo mesmo tipo de operação" era
+garantida só pelo lock pessimista da wallet + a checagem `findProcessedReversal` no
+`WagerTransactionProcessor`. Adicionada a unique `(reference_transaction_id, kind)` em
+`wager_transactions`. Como `reference_transaction_id` só é preenchido em transações
+`REFUND`/`ROLLBACK` **`PROCESSED`** (o `markProcessed` grava; `reject`/`markPendingReference`
+não), e o Postgres trata `NULL` como distinto em índice único, a constraint não afeta `BET`,
+`WIN`, `LOSS`, `OPENING` nem transações rejeitadas — atinge exatamente o caso da regra 7.4.
+`REFUND` e `ROLLBACK` da mesma referência coexistem (kinds diferentes na chave).
+
+`WagerTransactionRepository.save` traduz a violação dessa unique
+(`PersistenceConflictError` com `constraint === 'wager_transactions_reference_transaction_id_kind_unique'`)
+em `ReferenceResolutionError.alreadyReversed()` → HTTP 422 / `failureCode`
+`REFERENCE_ALREADY_REVERSED`, igual ao caminho de checagem em código. Esse caminho é
+defesa em profundidade: sob o lock da wallet a segunda reversão é serializada e barrada em
+código antes de chegar ao banco; a constraint cobre o cenário de o lock ser removido ou falhar.
+
+### MikroORM x triggers
+
+MikroORM 7 introspecta triggers/rotinas e o diff do schema tentaria dropar os triggers
+hand-written (não espelhados em `defineEntity`). Resolvido com
+`schemaGenerator: { ignoreTriggers: true, ignoreRoutines: true }` no `mikro-orm.config.ts` —
+triggers declarados continuam sendo criados, os existentes nunca são dropados pelo diff.
+`migration:check` fica limpo. A unique `(referenceTransactionId, kind)` foi declarada no
+`WagerTransactionSchema` (`uniques`), então essa parte é gerenciada normalmente pelo diff.
+
+### Validação
+
+`migration:up` → `migration:check` limpo → `down`×3 (teardown total) → `up`×3 → `migration:check`
+limpo, contra o Postgres do `docker-compose.yml`. Triggers e constraint confirmados via `psql`.
+`test/integration/schema-constraints.spec.ts` (6 casos): `UPDATE`/`DELETE` cru no ledger lança
+`/append-only/` e não remove a linha; segunda reversão `PROCESSED` do mesmo `(reference, kind)`
+→ `ReferenceResolutionError` com `code = REFERENCE_ALREADY_REVERSED`; kinds diferentes
+coexistem; `BET` com `reference` nulo não é constrangido.
+
+**Suítes após o Bloco A:** 116 unitários, 72 de integração (+6), 7 de concorrência — todos verdes.
+`tsc --noEmit` e `oxlint` limpos.
+
+## Revisão pós-entrega — Bloco B: concorrência multi-processo e restart
+
+A seção 13 (testes obrigatórios) pede "≥ 3 processos/instâncias simultâneos" e "reinício do
+serviço com comprovação da consistência final". A suíte tinha paralelismo real contra Postgres,
+mas dentro de **um** processo (objetos compartilhando um pool). Adicionados testes com processos
+de SO de verdade.
+
+### Harness — `test/concurrency/harness/instance.ts`
+
+Um entrypoint `bun` iniciado via `Bun.spawn`. Dois modos por env:
+
+- `INSTANCE_MODE=submit` — inicializa o MikroORM com a config real (`debug: false` para não
+  poluir o stdout), monta os casos de uso via `wireUseCases`, espera até `startAtEpochMs`
+  (alinhamento de largada entre processos) e submete a lista de transações do `INSTANCE_JOB`,
+  emitindo uma linha JSON por resultado. Sem `allowGlobalContext`: cada submit roda em
+  `RequestContext.create`, igual a um request HTTP.
+- `INSTANCE_MODE=consume` — sobe uma instância real da aplicação com
+  `NestFactory.createApplicationContext(AppModule)` (sem HTTP; os workers ligam no
+  `onApplicationBootstrap`). Fila e workers configuráveis por env passada ao processo filho.
+
+### `multi-process.spec.ts` (3 processos, 1 Postgres)
+
+- **Saldo contestado** — carteira `100.00`, três processos apostando `80.00` ao mesmo tempo →
+  exatamente 1 `PROCESSED`, 2 `REJECTED`/`INSUFFICIENT_FUNDS`, saldo `20.00`, 1 débito no ledger,
+  `reconcile` consistente. O `SELECT ... FOR UPDATE` serializa entre processos, não só entre
+  fibras.
+- **`Idempotency-Key` compartilhada** — 3 processos submetem a mesma key 10× cada (30 no total)
+  → 1 aplicação real, 29 replays, 1 débito, saldo `975.00`. A idempotência é do banco, então
+  atravessa a fronteira de processo.
+- **Carteiras distintas em paralelo** — 3 processos, 1 carteira cada, sem contenção cruzada.
+
+### `restart-recovery.spec.ts` (SIGKILL no meio do trabalho)
+
+Fila FIFO dedicada criada no teste com `VisibilityTimeout=2` (redelivery rápido). Instância A
+(consumidor + outbox, `SQS_CONSUMER_BATCH_SIZE=1`) processa mensagens; ao ver ≥1 `PROCESSED`,
+o teste manda `SIGKILL` (sem `onModuleDestroy`, sem drain). Instância B assume. Invariante final
+verificada: cada mensagem termina `PROCESSED` **uma vez** (o inbox persistido sobrevive ao
+restart e a mensagem em voo no momento do kill é reentregue e deduplicada), `M` débitos no
+ledger, saldo `stored == inicial − Σ`, `reconcile.consistent`, `M` linhas de inbox, e o outbox
+drena para zero pendentes (a instância B republica o que a transação abortada de A reverteu).
+
+`NODE_ENV=production` nos filhos: silencia o SQL debug do MikroORM e reflete um deploy real.
+
+### Contagens `PROCESSED` nos asserts
+
+`wager_transactions` `PROCESSED` inclui a transação `OPENING` da criação da carteira — os polls
+filtram por `kind = 'BET'` para contar só o trabalho da fila.
+
+**Suítes após o Bloco B:** 116 unitários, 72 de integração, **11 de concorrência** (+4:
+3 multi-processo, 1 restart) — todos verdes. `tsc`/`oxlint` limpos.
+
+## Revisão pós-entrega — Bloco C: saldo observado no replay (seção 7.7)
+
+A seção 7.7 exige que repetir uma operação já processada devolva "o resultado original,
+incluindo o saldo observado naquele momento". A implementação só acertava isso quando a
+transação tinha lançamento no ledger (`balanceAfter`). Para `LOSS` (que é `PROCESSED` e **não**
+move saldo), `REJECTED` e `PENDING_REFERENCE`, o replay caía num fallback que lia o **saldo
+atual** da carteira — que pode ter mudado entre o processamento e o replay.
+
+### Coluna `result_balance_amount`
+
+`Migration20260902141407` adiciona `result_balance_amount numeric(19,2) null` em
+`wager_transactions`. Guarda só o valor; a moeda é a mesma coluna `currency` da transação
+(carteira mono-moeda, moeda validada contra a da carteira antes de qualquer desfecho).
+
+`WagerTransaction` ganhou `_resultBalance?: Money`, o getter `resultBalance`, o setter
+`recordResultBalance(balance)` e o campo em `WagerTransactionState`/`rehydrate`. Optou-se por um
+**setter dedicado** em vez de estender as assinaturas de `markProcessed`/`reject`/
+`markPendingReference`: é um dado de auditoria/observabilidade, não uma transição de estado, e
+manter as assinaturas evita mexer nos 15 testes da máquina de estados e na criação de `OPENING`
+no `CreateWalletUseCase`. Não é set-once — no caminho `PENDING_REFERENCE → PROCESSED` o valor é
+sobrescrito com o saldo pós-crédito (o último desfecho é o que vale).
+
+### Gravação
+
+`WagerTransactionProcessor` chama `transaction.recordResultBalance(wallet.balance)` imediatamente
+antes de persistir, nos três caminhos terminais: `runProcess` (após mutar a carteira, ou o saldo
+inalterado no caso de `LOSS`), `holdForReference` e `reject`.
+
+### Leitura
+
+`SubmitWagerTransactionUseCase.balanceObservedFor(existing)` passou a checar `resultBalance`
+primeiro; o lookup de lançamento e o saldo atual da carteira ficam como fallback para linhas
+antigas gravadas antes da migration.
+
+### Testes
+
+- Unit: `WagerTransaction` carrega o saldo gravado por persistência; mapper faz round-trip de
+  `result_balance_amount` (valor e `null`).
+- Integração (`use-cases.spec.ts`): replay de `LOSS` após um `BET` mover o saldo devolve o saldo
+  de quando o `LOSS` foi processado, não o atual; idem para um `BET` rejeitado por saldo
+  insuficiente após um `WIN` posterior.
+
+`migration:up` → `check` limpo → `down`/`up` → `check` limpo. **118 unitários (+2), 74 de
+integração (+2), 11 de concorrência** — verdes. `tsc`/`oxlint` limpos.
+
+### Nota — gerador de migration e triggers
+
+`migration:create` volta a emitir DDL espúria de recriação dos triggers do ledger no `down()`
+(mesmo com `schemaGenerator.ignoreTriggers`, que só cobre o `up`). A migration foi editada à mão
+para conter apenas o `add`/`drop column`. `migration:check` permanece limpo.
+
+## Revisão pós-entrega — Bloco D: limpezas
+
+- **Nível de log `info`** — `StructuredLogger.log()` emitia `"level":"log"` (nome do nível de
+  info no NestJS). Passou a emitir `"level":"info"`, mais convencional para um consumidor de logs
+  estruturados. `warn`/`error`/`debug`/`verbose` inalterados. `write` agora tipa `level` como
+  `string` (o valor `'info'` não faz parte do union `LogLevel` do Nest).
+- **Parágrafo de mensageria do ARCHITECTURE.md** — reescrito: deixava implícito que a publicação
+  do outbox roda dentro da transação que segura o lock **da carteira**. Na verdade a transação de
+  negócio (que segura o lock da carteira) só grava as linhas em `outbox_messages`; o worker
+  publica depois, em transação própria, segurando apenas o lock (`SKIP LOCKED`) da linha do
+  outbox durante o envio à SQS. Restrição 4 (não publicar antes do commit) é respeitada.
+- **`IDEMPOTENCY_CONFLICT` vs `PERSISTENCE_CONFLICT` — não alterado.** Os dois já mapeiam para
+  `409` e a API distingue as cinco situações da seção 9 por **status HTTP**, não pelo `code`. Um
+  `PersistenceConflictError` cru só escapa quando o replay pós-conflito não encontra a linha (a
+  transação concorrente abortou) — situação retriável, onde `PERSISTENCE_CONFLICT` é mais honesto
+  que `IDEMPOTENCY_CONFLICT` ("corrija a key"). Trocar seria cosmético e potencialmente pior.
+
+## Revisão pós-entrega — Bloco E: fechamento de observabilidade (seção 12)
+
+Uma segunda revisão independente apontou três lacunas contra a seção 12 ("logs estruturados JSON"
++ "sem payloads financeiros nos logs"), todas corrigidas:
+
+- **Logger da aplicação** — `main.ts` não instalava o `StructuredLogger`; logs do framework Nest,
+  exceções não tratadas e MikroORM saíam no logger colorido default. Agora
+  `NestFactory.create(AppModule, { bufferLogs: true })` + `app.useLogger(app.get(StructuredLogger))`
+  — **todo** o output é JSON (confirmado no boot).
+- **Valores monetários no log de reconciliação** — `reconcile-wallet.use-case.ts` logava
+  `storedBalance`/`calculatedBalance`/`difference`. Agora o `warn` registra só `walletId`,
+  `checkedEntries` e `direction` (`stored-below-ledger` / `stored-above-ledger`). Os montantes
+  continuam na **resposta** da API e a divergência continua contabilizada na métrica — a seção 9
+  exige sinalização, não que os valores estejam no log.
+- **SQL debug do MikroORM** — era `debug: process.env.NODE_ENV !== 'production'` (ligado em dev,
+  logando SQL com valores). Agora `debug: process.env.MIKRO_ORM_DEBUG === 'true'` — desligado por
+  padrão, opt-in explícito. Documentado em `.env.example`.
+
+Também corrigido o `ARCHITECTURE.md`: `version` era descrito como "optimistic-friendly", mas
+nunca é verificado em nenhum `UPDATE` — é um contador monotônico de alterações de saldo (exposto
+na API e no evento `WalletBalanceChanged`); o controle de concorrência é 100% pessimista.
+
+**Suítes após o Bloco E:** 118 unitários, 74 de integração, 11 de concorrência — verdes.
+`tsc`/`oxlint` limpos. Boot confirma output 100% JSON, sem SQL debug.

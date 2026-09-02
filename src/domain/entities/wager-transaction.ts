@@ -44,6 +44,7 @@ export interface WagerTransactionState {
   nextReferenceCheckAt?: Date;
   failureCode?: FailureCode;
   processedAt?: Date;
+  resultBalance?: MoneyProps;
 }
 
 const TRANSITIONS: Record<WagerTransactionStatus, readonly WagerTransactionStatus[]> = {
@@ -95,6 +96,7 @@ export class WagerTransaction {
     private _processedAt?: Date,
     private _referenceCheckAttempts: number = 0,
     private _nextReferenceCheckAt?: Date,
+    private _resultBalance?: Money,
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
@@ -143,6 +145,7 @@ export class WagerTransaction {
       state.processedAt,
       state.referenceCheckAttempts ?? 0,
       state.nextReferenceCheckAt,
+      state.resultBalance ? Money.from(state.resultBalance) : undefined,
     );
   }
 
@@ -164,6 +167,14 @@ export class WagerTransaction {
 
   get referenceCheckAttempts(): number {
     return this._referenceCheckAttempts;
+  }
+
+  get resultBalance(): Money | undefined {
+    return this._resultBalance;
+  }
+
+  recordResultBalance(balance: Money): void {
+    this._resultBalance = balance;
   }
 
   get nextReferenceCheckAt(): Date | undefined {

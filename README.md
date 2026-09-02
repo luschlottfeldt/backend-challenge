@@ -1,22 +1,24 @@
 # Distributed Wagering Processor
 
 Serviço financeiro distribuído para processamento de apostas, construído para o desafio técnico
-da Jungle Gaming. O enunciado original está em [`CHALLENGE.md`](./CHALLENGE.md); as decisões de
-arquitetura tomadas durante o desenvolvimento estão em [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+da Jungle Gaming. O enunciado original está em [`CHALLENGE.md`](./CHALLENGE.md); a arquitetura,
+os trade-offs e a decisão sobre autenticação estão em [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+(o rascunho detalhado, decisão a decisão, está em [`DECISIONS.md`](./DECISIONS.md)).
 
 ## Stack
 
-- **Runtime / package manager / test runner:** Bun 1.x
+- **Runtime / package manager / test runner:** Bun 1.4
 - **Linguagem:** TypeScript (modo estrito)
-- **Framework:** NestJS
-- **Banco:** PostgreSQL
-- **ORM:** MikroORM
+- **Framework:** NestJS 12
+- **Banco:** PostgreSQL 16
+- **ORM:** MikroORM 7 (Data Mapper)
 - **Mensageria:** AWS SQS via LocalStack
+- **Métricas:** Prometheus (`prom-client`)
 - **Orquestração local:** Docker Compose
 
 ## Pré-requisitos
 
-- [Bun](https://bun.sh) 1.x
+- [Bun](https://bun.sh) 1.4+
 - Docker e Docker Compose
 
 ## Setup
@@ -43,52 +45,73 @@ A aplicação sobe em `http://localhost:3000`. Verifique com:
 ```bash
 curl http://localhost:3000/health/live
 curl http://localhost:3000/health/ready
+curl http://localhost:3000/metrics
 ```
 
-## Scripts disponíveis
+## Endpoints
+
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/wallets` | Cria uma carteira (saldo inicial positivo gera transação `OPENING` + lançamento) |
+| `GET` | `/wallets/:walletId` | Consulta a carteira |
+| `GET` | `/wallets/:walletId/ledger?cursor=&limit=` | Ledger paginado por cursor opaco |
+| `POST` | `/wallets/:walletId/reconciliation` | Reconcilia saldo x lançamentos |
+| `POST` | `/wagering/transactions` | Submete uma transação — header `Idempotency-Key` obrigatório |
+| `GET` | `/wagering/transactions/:transactionId` | Consulta por id |
+| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta por provedor + id externo |
+| `GET` | `/health/live` · `/health/ready` | Liveness / readiness (abertos) |
+| `GET` | `/metrics` | Métricas no formato Prometheus |
+
+Autenticação **não** foi implementada — ver `ARCHITECTURE.md`. Os controllers de negócio têm um
+`NoOpAuthGuard` como ponto de extensão.
+
+## Workers
+
+API HTTP e os três workers rodam no mesmo processo. Cada worker é ligável por variável de
+ambiente (default: ligado), o que permite escalar réplicas com papéis diferentes:
+
+| Variável | Worker |
+|---|---|
+| `OUTBOX_PUBLISHER_ENABLED` | Publica os eventos pendentes do outbox na `integration-events.fifo` |
+| `SQS_CONSUMER_ENABLED` | Consome `wager-transactions.fifo` (inbox + dedup) |
+| `REFERENCE_REPROCESS_ENABLED` | Reprocessa transações `PENDING_REFERENCE` com backoff |
+
+## Testes
+
+```bash
+bun run test              # unidade (test/unit/) — domínio puro, sem I/O
+bun run test:integration  # integração (test/integration/) — exige Postgres + LocalStack
+bun run test:concurrency  # concorrência (test/concurrency/) — races, 3+ processos reais, restart pós-SIGKILL; exige Postgres + LocalStack
+```
+
+Os testes de integração e concorrência rodam contra os containers do `docker-compose.yml` — não
+há mock de banco ou de fila. Teste de carga (`test:load`) não foi implementado.
+
+## Scripts
 
 | Script | Descrição |
 |---|---|
-| `bun run start` | Sobe a aplicação (build via Nest CLI) |
-| `bun run start:dev` | Sobe a aplicação em modo watch |
-| `bun run start:debug` | Modo watch com debugger |
-| `bun run start:prod` | Sobe o build de produção (`dist/main.js`) |
+| `bun run start` / `start:dev` / `start:debug` / `start:prod` | Sobe a aplicação |
 | `bun run build` | Compila para `dist/` |
-| `bun run test` | Testes unitários (`src/**/*.spec.ts`) |
-| `bun run test:watch` | Testes unitários em modo watch |
-| `bun run test:cov` | Testes unitários com cobertura |
-| `bun run test:integration` | Testes de integração (`test/integration/`) — exige Postgres/LocalStack reais rodando |
-| `bun run test:concurrency` | Testes de concorrência (`test/concurrency/`) — exige Postgres/LocalStack reais rodando |
 | `bun run lint` | Lint (oxlint) |
-| `bun run format` | Formata o código (prettier) |
-| `bun run mikro-orm` | CLI do MikroORM |
-| `bun run migration:create` | Gera uma nova migration a partir do diff de entidades |
-| `bun run migration:up` | Aplica migrations pendentes |
-| `bun run migration:down` | Reverte a última migration |
-| `bun run migration:pending` | Lista migrations pendentes |
+| `bun run format` | Formata (prettier) |
+| `bun run migration:up` / `migration:down` / `migration:pending` | Migrations |
+| `bun run migration:create` | Gera migration a partir do diff de entidades |
 
 ## Estrutura de pastas
 
 ```
 src/
-├── domain/          # Entidades, VOs, eventos, erros e interfaces de repositório (portas)
-├── application/      # Casos de uso (orquestração)
-├── infrastructure/    # MikroORM, SQS, logger — implementações concretas das portas do domínio
-├── presentation/      # Controllers, DTOs, guards, filtros (NestJS)
+├── domain/          # Entidades, VOs, máquina de estados, eventos, erros, portas de repositório
+├── application/     # Casos de uso, WagerTransactionProcessor, portas (Clock, Metrics, ...)
+├── infrastructure/  # MikroORM, SQS, logger, métricas, workers — adapters concretos
+├── presentation/    # Controllers, DTOs, filtro de exceção, interceptor, guard
 ├── app.module.ts
 ├── mikro-orm.config.ts
 └── main.ts
 
 test/
-├── integration/     # Testes contra Postgres/LocalStack reais
-└── concurrency/     # Testes de concorrência real (múltiplas instâncias/paralelismo)
+├── unit/            # Testes de unidade (espelham a árvore de src/)
+├── integration/     # Testes contra Postgres + LocalStack reais
+└── concurrency/     # Races, multi-processo e restart (harness/ sobe instâncias como processos separados)
 ```
-
-## Estado atual
-
-Este repositório contém o **boilerplate** do projeto: estrutura de camadas, entidades de domínio
-com as assinaturas do desafio (ainda sem lógica de negócio implementada), schema de banco já
-migrado, endpoints da API mapeados (ainda retornando `Not implemented`) e toda a infraestrutura
-local (Postgres, SQS via LocalStack) funcionando de ponta a ponta. A lógica de negócio (`Money`,
-`Wallet`, `WagerTransaction`, casos de uso, idempotência, outbox worker) é o próximo passo de
-desenvolvimento.

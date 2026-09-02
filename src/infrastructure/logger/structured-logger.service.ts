@@ -1,9 +1,9 @@
-import { Injectable, type LoggerService, type LogLevel } from '@nestjs/common';
+import { Injectable, type LoggerService } from '@nestjs/common';
 
 @Injectable()
 export class StructuredLogger implements LoggerService {
   log(message: unknown, context?: string): void {
-    this.write('log', message, context);
+    this.write('info', message, context);
   }
 
   error(message: unknown, trace?: string, context?: string): void {
@@ -22,7 +22,7 @@ export class StructuredLogger implements LoggerService {
     this.write('verbose', message, context);
   }
 
-  private write(level: LogLevel, message: unknown, context?: string, trace?: string): void {
+  private write(level: string, message: unknown, context?: string, trace?: string): void {
     const entry = {
       level,
       message,

@@ -14,5 +14,9 @@ export default defineConfig({
     path: './dist/infrastructure/database/migrations',
     pathTs: './src/infrastructure/database/migrations',
   },
-  debug: process.env.NODE_ENV !== 'production',
+  schemaGenerator: {
+    ignoreTriggers: true,
+    ignoreRoutines: true,
+  },
+  debug: process.env.MIKRO_ORM_DEBUG === 'true',
 });

@@ -24,6 +24,7 @@ export interface WagerTransactionRow {
   nextReferenceCheckAt: Date | null | undefined;
   failureCode: string | null | undefined;
   processedAt: Date | null | undefined;
+  resultBalanceAmount: string | null | undefined;
 }
 
 export const wagerTransactionMapper = {
@@ -48,6 +49,10 @@ export const wagerTransactionMapper = {
       nextReferenceCheckAt: row.nextReferenceCheckAt ?? undefined,
       failureCode: (row.failureCode ?? undefined) as FailureCode | undefined,
       processedAt: row.processedAt ?? undefined,
+      resultBalance:
+        row.resultBalanceAmount != null
+          ? { amount: row.resultBalanceAmount, currency: row.currency }
+          : undefined,
     });
   },
 
@@ -74,6 +79,7 @@ export const wagerTransactionMapper = {
       nextReferenceCheckAt: transaction.nextReferenceCheckAt ?? null,
       failureCode: transaction.failureCode ?? null,
       processedAt: transaction.processedAt ?? null,
+      resultBalanceAmount: transaction.resultBalance?.toJSON().amount ?? null,
     };
   },
 };

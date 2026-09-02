@@ -160,21 +160,21 @@ export class SubmitWagerTransactionUseCase {
     return {
       transactionId: existing.id,
       status: existing.status,
-      balance: await this.balanceObservedFor(existing.id, existing.walletId),
+      balance: await this.balanceObservedFor(existing),
       failureCode: existing.failureCode,
       idempotentReplay: true,
     };
   }
 
-  private async balanceObservedFor(
-    transactionId: string,
-    walletId: string,
-  ): Promise<MoneyProps | null> {
-    const entry = await this.ledger.findByTransactionId(transactionId);
+  private async balanceObservedFor(existing: WagerTransaction): Promise<MoneyProps | null> {
+    if (existing.resultBalance) {
+      return existing.resultBalance.toJSON();
+    }
+    const entry = await this.ledger.findByTransactionId(existing.id);
     if (entry) {
       return entry.balanceAfter.toJSON();
     }
-    const wallet = await this.wallets.findById(walletId);
+    const wallet = await this.wallets.findById(existing.walletId);
     return wallet ? wallet.balance.toJSON() : null;
   }
 }

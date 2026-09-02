@@ -26,8 +26,12 @@ export const WagerTransactionSchema = defineEntity({
     nextReferenceCheckAt: p.datetime().nullable(),
     failureCode: p.string().nullable(),
     processedAt: p.datetime().nullable(),
+    resultBalanceAmount: p.decimal().precision(19).scale(2).nullable(),
   },
-  uniques: [{ properties: ['providerId', 'externalTransactionId'] }],
+  uniques: [
+    { properties: ['providerId', 'externalTransactionId'] },
+    { properties: ['referenceTransactionId', 'kind'] },
+  ],
   indexes: [
     { properties: ['status', 'nextReferenceCheckAt'] },
     { properties: ['referenceTransactionId'] },

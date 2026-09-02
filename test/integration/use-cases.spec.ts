@@ -169,6 +169,68 @@ describe('SubmitWagerTransactionUseCase - idempotency', () => {
     expect((await uc.getWallet.execute(wallet.id)).balance).toEqual(brl('65.00'));
   });
 
+  it('replays a LOSS with the balance observed when it was processed, not the current one', async () => {
+    const wallet = await openWallet('100.00');
+    const externalTransactionId = crypto.randomUUID();
+    const command = {
+      idempotencyKey: `provider-a:${externalTransactionId}`,
+      providerId: 'provider-a',
+      externalTransactionId,
+      playerId: wallet.playerId,
+      walletId: wallet.id,
+      roundId: 'r',
+      gameId: 'g',
+      kind: WagerTransactionKind.Loss,
+      money: brl('10.00'),
+    };
+
+    const first = await uc.submit.execute(command);
+    expect(first.balance).toEqual(brl('100.00'));
+
+    await submitBet(wallet.id, wallet.playerId, { money: brl('30.00') });
+
+    const replay = await uc.submit.execute(command);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.status).toBe(WagerTransactionStatus.Processed);
+    expect(replay.balance).toEqual(brl('100.00'));
+    expect((await uc.getWallet.execute(wallet.id)).balance).toEqual(brl('70.00'));
+  });
+
+  it('replays a rejected BET with the balance observed at rejection time', async () => {
+    const wallet = await openWallet('20.00');
+    const externalTransactionId = crypto.randomUUID();
+    const command = {
+      idempotencyKey: `provider-a:${externalTransactionId}`,
+      providerId: 'provider-a',
+      externalTransactionId,
+      playerId: wallet.playerId,
+      walletId: wallet.id,
+      roundId: 'r',
+      gameId: 'g',
+      kind: WagerTransactionKind.Bet,
+      money: brl('25.00'),
+    };
+
+    const first = await uc.submit.execute(command);
+    expect(first.status).toBe(WagerTransactionStatus.Rejected);
+    expect(first.balance).toEqual(brl('20.00'));
+
+    await uc.submit.execute({
+      ...command,
+      idempotencyKey: `provider-a:${crypto.randomUUID()}`,
+      externalTransactionId: crypto.randomUUID(),
+      kind: WagerTransactionKind.Win,
+      money: brl('50.00'),
+    });
+
+    const replay = await uc.submit.execute(command);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.status).toBe(WagerTransactionStatus.Rejected);
+    expect(replay.failureCode).toBe(FailureCode.InsufficientFunds);
+    expect(replay.balance).toEqual(brl('20.00'));
+    expect((await uc.getWallet.execute(wallet.id)).balance).toEqual(brl('70.00'));
+  });
+
   it('rejects the same key with a different payload as a conflict', async () => {
     const wallet = await openWallet('100.00');
     const externalTransactionId = crypto.randomUUID();
