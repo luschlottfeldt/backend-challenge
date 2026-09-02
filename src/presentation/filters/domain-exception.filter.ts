@@ -23,6 +23,7 @@ import { WagerTransactionNotFoundError } from '../../domain/errors/wager-transac
 import { InvalidLedgerCursorError } from '../../domain/errors/invalid-ledger-cursor.error.js';
 import { InvalidMoneyError } from '../../domain/errors/invalid-money.error.js';
 import { LOGGER, type Logger } from '../../application/ports/logger.js';
+import { METRICS, type Metrics } from '../../application/ports/metrics.js';
 
 interface ErrorBody {
   code: string;
@@ -33,7 +34,10 @@ interface ErrorBody {
 
 @Catch()
 export class DomainExceptionFilter implements ExceptionFilter {
-  constructor(@Inject(LOGGER) private readonly logger: Logger) {}
+  constructor(
+    @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
+  ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
@@ -89,6 +93,9 @@ export class DomainExceptionFilter implements ExceptionFilter {
       exception instanceof DeadlockException ||
       exception instanceof ConnectionException
     ) {
+      if (!(exception instanceof ConnectionException)) {
+        this.metrics.lockConflict();
+      }
       return {
         status: HttpStatus.SERVICE_UNAVAILABLE,
         body: {

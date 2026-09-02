@@ -7,6 +7,7 @@ import type { IWalletLedgerEntryRepository } from '../../domain/repositories/wal
 import { WALLET_REPOSITORY, WALLET_LEDGER_ENTRY_REPOSITORY } from '../../domain/repositories/tokens.js';
 import { encodeLedgerCursor } from '../pagination/ledger-cursor.js';
 import { LOGGER, type Logger } from '../ports/logger.js';
+import { METRICS, type Metrics } from '../ports/metrics.js';
 
 const PAGE_SIZE = 200;
 
@@ -25,6 +26,7 @@ export class ReconcileWalletUseCase {
     @Inject(WALLET_REPOSITORY) private readonly wallets: IWalletRepository,
     @Inject(WALLET_LEDGER_ENTRY_REPOSITORY) private readonly ledger: IWalletLedgerEntryRepository,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async execute(walletId: string): Promise<ReconcileWalletResult> {
@@ -63,6 +65,7 @@ export class ReconcileWalletUseCase {
     const consistent = difference.isZero();
 
     if (!consistent) {
+      this.metrics.reconciliationDivergence();
       this.logger.warn('wallet reconciliation divergence detected', {
         walletId,
         storedBalance: storedBalance.toString(),

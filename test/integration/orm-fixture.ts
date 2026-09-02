@@ -2,7 +2,11 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import config from '../../src/mikro-orm.config.js';
 
 export async function createTestOrm(): Promise<MikroORM> {
-  return MikroORM.init({ ...config, allowGlobalContext: true });
+  return MikroORM.init({
+    ...config,
+    allowGlobalContext: true,
+    pool: { min: 2, max: 40 },
+  });
 }
 
 export async function truncateAll(orm: MikroORM): Promise<void> {

@@ -14,7 +14,13 @@ import {
 import { DomainError } from '../../domain/errors/domain-error.js';
 import { MalformedMessageError } from '../../application/messaging/malformed-message.error.js';
 import { InboundWagerTransactionHandler } from '../../application/messaging/inbound-wager-transaction.handler.js';
+import { randomUUID } from 'node:crypto';
 import { LOGGER, type Logger } from '../../application/ports/logger.js';
+import { METRICS, type Metrics } from '../../application/ports/metrics.js';
+import {
+  LOG_CONTEXT_STORE,
+  type LogContextStore,
+} from '../../application/ports/log-context.js';
 import { SQS_CLIENT } from './sqs-client.provider.js';
 
 @Injectable()
@@ -28,6 +34,8 @@ export class SqsWagerTransactionConsumer implements OnApplicationBootstrap, OnMo
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
     private readonly handler: InboundWagerTransactionHandler,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
+    @Inject(LOG_CONTEXT_STORE) private readonly logContext: LogContextStore,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -77,10 +85,20 @@ export class SqsWagerTransactionConsumer implements OnApplicationBootstrap, OnMo
     return handled;
   }
 
-  private async consume(message: Message): Promise<void> {
+  private consume(message: Message): Promise<void> {
+    return this.logContext.run(
+      { correlationId: randomUUID(), messageId: message.MessageId },
+      () => this.handleMessage(message),
+    );
+  }
+
+  private async handleMessage(message: Message): Promise<void> {
     const body = message.Body ?? '';
     try {
       const outcome = await this.handler.handle(body);
+      if (outcome.status === 'duplicate') {
+        this.metrics.duplicateDetected('inbox');
+      }
       await this.deleteMessage(message);
       this.logger.info('sqs message handled', {
         messageId: outcome.messageId,
@@ -115,6 +133,7 @@ export class SqsWagerTransactionConsumer implements OnApplicationBootstrap, OnMo
       );
     }
     await this.deleteMessage(message);
+    this.metrics.messageDeadLettered(error.name);
     this.logger.error('sqs message dead-lettered', {
       sqsMessageId: message.MessageId,
       reason: error.name,

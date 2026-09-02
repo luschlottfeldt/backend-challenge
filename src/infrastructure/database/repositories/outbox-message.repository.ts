@@ -26,6 +26,15 @@ export class OutboxMessageRepository implements IOutboxMessageRepository {
     return rows.map((row) => outboxMessageMapper.toDomain(row));
   }
 
+  async oldestUnpublishedAt(): Promise<Date | null> {
+    const row = await this.em.findOne(
+      OutboxMessageOrmEntity,
+      { publishedAt: null },
+      { orderBy: { occurredAt: 'asc' }, fields: ['occurredAt'] },
+    );
+    return row?.occurredAt ?? null;
+  }
+
   async save(message: OutboxMessage): Promise<void> {
     await persistOrConflict(async () => {
       const row = outboxMessageMapper.toPersistence(message);

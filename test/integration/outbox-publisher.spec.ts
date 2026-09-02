@@ -6,7 +6,7 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { createTestOrm, truncateAll } from './orm-fixture.js';
-import { MutableClock } from './wire-use-cases.js';
+import { MutableClock, noopMetrics } from './wire-use-cases.js';
 import { MikroOrmTransactionRunner } from '../../src/infrastructure/database/mikro-orm-transaction-runner.js';
 import { OutboxMessageRepository } from '../../src/infrastructure/database/repositories/outbox-message.repository.js';
 import { SqsMessagePublisher } from '../../src/infrastructure/messaging/sqs-message-publisher.js';
@@ -82,7 +82,7 @@ const publisherFor = (client: SQSClient): MessagePublisher =>
   new SqsMessagePublisher(client, QUEUE_URL);
 
 const buildWorker = (publisher: MessagePublisher) =>
-  new OutboxPublisher(runner, outbox, publisher, clock, noopLogger);
+  new OutboxPublisher(runner, outbox, publisher, clock, noopLogger, noopMetrics);
 
 beforeAll(async () => {
   orm = await createTestOrm();
@@ -154,6 +154,7 @@ describe('OutboxPublisher', () => {
       publisherFor(sqs),
       clock,
       noopLogger,
+      noopMetrics,
     );
     const workerB = new OutboxPublisher(
       new MikroOrmTransactionRunner(orm.em),
@@ -161,6 +162,7 @@ describe('OutboxPublisher', () => {
       publisherFor(sqs),
       clock,
       noopLogger,
+      noopMetrics,
     );
 
     const [tickA, tickB] = await Promise.all([workerA.runOnce(), workerB.runOnce()]);

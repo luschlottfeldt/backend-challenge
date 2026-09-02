@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { InboxMessage } from './inbox-message.js';
-import { InvalidMessageStateError } from '../errors/invalid-message-state.error.js';
+import { InboxMessage } from '../../../../src/domain/entities/inbox-message.js';
+import { InvalidMessageStateError } from '../../../../src/domain/errors/invalid-message-state.error.js';
 
 const NOW = new Date('2026-09-01T00:00:00.000Z');
 const LATER = new Date('2026-09-01T00:00:05.000Z');

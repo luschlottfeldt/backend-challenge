@@ -2,12 +2,14 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { TerminusModule } from '@nestjs/terminus';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import mikroOrmConfig from './mikro-orm.config.js';
 import { WalletsController } from './presentation/controllers/wallets.controller.js';
 import { WageringTransactionsController } from './presentation/controllers/wagering-transactions.controller.js';
 import { HealthController } from './presentation/controllers/health.controller.js';
+import { MetricsController } from './presentation/controllers/metrics.controller.js';
 import { DomainExceptionFilter } from './presentation/filters/domain-exception.filter.js';
+import { LogContextInterceptor } from './presentation/interceptors/log-context.interceptor.js';
 import { WalletRepository } from './infrastructure/database/repositories/wallet.repository.js';
 import { WagerTransactionRepository } from './infrastructure/database/repositories/wager-transaction.repository.js';
 import { WalletLedgerEntryRepository } from './infrastructure/database/repositories/wallet-ledger-entry.repository.js';
@@ -23,11 +25,15 @@ import { OutboxPublisherScheduler } from './infrastructure/workers/outbox-publis
 import { ReferenceReprocessScheduler } from './infrastructure/workers/reference-reprocess.scheduler.js';
 import { InboundWagerTransactionHandler } from './application/messaging/inbound-wager-transaction.handler.js';
 import { MESSAGE_PUBLISHER } from './application/ports/message-publisher.js';
+import { METRICS } from './application/ports/metrics.js';
+import { PrometheusMetrics } from './infrastructure/observability/prometheus-metrics.js';
 import { StructuredLogger } from './infrastructure/logger/structured-logger.service.js';
 import { MikroOrmTransactionRunner } from './infrastructure/database/mikro-orm-transaction-runner.js';
 import { SystemClock } from './infrastructure/clock/system-clock.js';
 import { UuidGenerator } from './infrastructure/id/uuid-generator.js';
 import { LoggerAdapter } from './infrastructure/logger/logger.adapter.js';
+import { AlsLogContextStore } from './infrastructure/logger/als-log-context.store.js';
+import { LOG_CONTEXT_STORE } from './application/ports/log-context.js';
 import { TRANSACTION_RUNNER } from './application/ports/transaction-runner.js';
 import { CLOCK } from './application/ports/clock.js';
 import { ID_GENERATOR } from './application/ports/id-generator.js';
@@ -54,7 +60,12 @@ import {
     MikroOrmModule.forRoot(mikroOrmConfig),
     TerminusModule,
   ],
-  controllers: [WalletsController, WageringTransactionsController, HealthController],
+  controllers: [
+    WalletsController,
+    WageringTransactionsController,
+    HealthController,
+    MetricsController,
+  ],
   providers: [
     StructuredLogger,
     DatabaseHealthIndicator,
@@ -80,6 +91,9 @@ import {
     { provide: CLOCK, useClass: SystemClock },
     { provide: ID_GENERATOR, useClass: UuidGenerator },
     { provide: LOGGER, useClass: LoggerAdapter },
+    { provide: LOG_CONTEXT_STORE, useClass: AlsLogContextStore },
+    PrometheusMetrics,
+    { provide: METRICS, useExisting: PrometheusMetrics },
     WagerTransactionProcessor,
     CreateWalletUseCase,
     SubmitWagerTransactionUseCase,
@@ -89,6 +103,7 @@ import {
     ReconcileWalletUseCase,
     ReprocessPendingReferencesUseCase,
     { provide: APP_FILTER, useClass: DomainExceptionFilter },
+    { provide: APP_INTERCEPTOR, useClass: LogContextInterceptor },
   ],
 })
 export class AppModule {}

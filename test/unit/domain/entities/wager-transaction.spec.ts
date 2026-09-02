@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'bun:test';
-import { WagerTransaction, type CreateWagerTransactionProps } from './wager-transaction.js';
-import { Money } from './money.js';
-import { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
-import { WagerTransactionStatus } from '../enums/wager-transaction-status.enum.js';
-import { LedgerDirection } from '../enums/ledger-direction.enum.js';
-import { FailureCode } from '../enums/failure-code.js';
-import { InvalidTransactionStateError } from '../errors/invalid-transaction-state.error.js';
-import { InvalidLedgerEntryError } from '../errors/invalid-ledger-entry.error.js';
-import { ReferenceResolutionError } from '../errors/reference-resolution.error.js';
+import { WagerTransaction, type CreateWagerTransactionProps } from '../../../../src/domain/entities/wager-transaction.js';
+import { Money } from '../../../../src/domain/entities/money.js';
+import { WagerTransactionKind } from '../../../../src/domain/enums/wager-transaction-kind.enum.js';
+import { WagerTransactionStatus } from '../../../../src/domain/enums/wager-transaction-status.enum.js';
+import { LedgerDirection } from '../../../../src/domain/enums/ledger-direction.enum.js';
+import { FailureCode } from '../../../../src/domain/enums/failure-code.js';
+import { InvalidTransactionStateError } from '../../../../src/domain/errors/invalid-transaction-state.error.js';
+import { InvalidLedgerEntryError } from '../../../../src/domain/errors/invalid-ledger-entry.error.js';
+import { ReferenceResolutionError } from '../../../../src/domain/errors/reference-resolution.error.js';
 
 const NOW = new Date('2026-09-01T00:00:00.000Z');
 

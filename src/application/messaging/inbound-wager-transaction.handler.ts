@@ -5,6 +5,7 @@ import type { IInboxMessageRepository } from '../../domain/repositories/inbox-me
 import { INBOX_MESSAGE_REPOSITORY } from '../../domain/repositories/tokens.js';
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../ports/transaction-runner.js';
 import { CLOCK, type Clock } from '../ports/clock.js';
+import { LOG_CONTEXT_STORE, type LogContextStore } from '../ports/log-context.js';
 import {
   SubmitWagerTransactionUseCase,
   type SubmitWagerTransactionResult,
@@ -24,11 +25,18 @@ export class InboundWagerTransactionHandler {
     @Inject(INBOX_MESSAGE_REPOSITORY) private readonly inbox: IInboxMessageRepository,
     private readonly submitUseCase: SubmitWagerTransactionUseCase,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(LOG_CONTEXT_STORE) private readonly logContext: LogContextStore,
   ) {}
 
   async handle(rawBody: string): Promise<InboundOutcome> {
     const { messageId, command } = parseWagerTransactionMessage(rawBody);
     const payloadHash = sha256Hex(rawBody);
+    this.logContext.enrich({
+      messageId,
+      correlationId: command.correlationId,
+      providerId: command.providerId,
+      walletId: command.walletId,
+    });
 
     return this.runner.run(async () => {
       const existing = await this.inbox.findByMessageId(WAGER_TRANSACTIONS_CONSUMER, messageId);

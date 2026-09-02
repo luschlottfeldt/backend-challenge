@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import { Wallet } from '../entities/wallet.js';
-import { WagerTransaction } from '../entities/wager-transaction.js';
-import { Money } from '../entities/money.js';
-import { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
-import { LedgerDirection } from '../enums/ledger-direction.enum.js';
-import { FailureCode } from '../enums/failure-code.js';
-import type { EventContext } from './event-context.js';
-import { WalletBalanceChanged } from './wallet-balance-changed.event.js';
-import { WagerTransactionProcessed } from './wager-transaction-processed.event.js';
-import { WagerTransactionRejected } from './wager-transaction-rejected.event.js';
-import { WagerTransactionPendingReference } from './wager-transaction-pending-reference.event.js';
+import { Wallet } from '../../../../src/domain/entities/wallet.js';
+import { WagerTransaction } from '../../../../src/domain/entities/wager-transaction.js';
+import { Money } from '../../../../src/domain/entities/money.js';
+import { WagerTransactionKind } from '../../../../src/domain/enums/wager-transaction-kind.enum.js';
+import { LedgerDirection } from '../../../../src/domain/enums/ledger-direction.enum.js';
+import { FailureCode } from '../../../../src/domain/enums/failure-code.js';
+import type { EventContext } from '../../../../src/domain/events/event-context.js';
+import { WalletBalanceChanged } from '../../../../src/domain/events/wallet-balance-changed.event.js';
+import { WagerTransactionProcessed } from '../../../../src/domain/events/wager-transaction-processed.event.js';
+import { WagerTransactionRejected } from '../../../../src/domain/events/wager-transaction-rejected.event.js';
+import { WagerTransactionPendingReference } from '../../../../src/domain/events/wager-transaction-pending-reference.event.js';
 
 const NOW = new Date('2026-09-01T12:00:00.000Z');
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   hashWagerTransactionPayload,
   type WagerTransactionBusinessPayload,
-} from './payload-hash.js';
-import { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
+} from '../../../../src/domain/support/payload-hash.js';
+import { WagerTransactionKind } from '../../../../src/domain/enums/wager-transaction-kind.enum.js';
 
 const payload = (
   over: Partial<WagerTransactionBusinessPayload> = {},

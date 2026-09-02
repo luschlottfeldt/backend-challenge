@@ -26,6 +26,27 @@ export class MutableClock {
 const noopLogger = { info() {}, warn() {}, error() {} };
 const uuidGenerator = { next: () => crypto.randomUUID() };
 
+export const noopMetrics = {
+  transactionSettled() {},
+  duplicateDetected() {},
+  retryScheduled() {},
+  messageDeadLettered() {},
+  lockConflict() {},
+  reconciliationDivergence() {},
+  observeProcessingLatency() {},
+  setOutboxLagSeconds() {},
+};
+
+export const noopLogContext = {
+  run<T>(_fields: unknown, work: () => T): T {
+    return work();
+  },
+  enrich() {},
+  current() {
+    return {};
+  },
+};
+
 export function wireUseCases(orm: MikroORM, clock: MutableClock) {
   const em = orm.em;
   const runner = new MikroOrmTransactionRunner(em);
@@ -33,10 +54,27 @@ export function wireUseCases(orm: MikroORM, clock: MutableClock) {
   const transactions = new WagerTransactionRepository(em);
   const ledger = new WalletLedgerEntryRepository(em);
   const outbox = new OutboxMessageRepository(em);
-  const processor = new WagerTransactionProcessor(wallets, transactions, ledger, outbox, uuidGenerator);
+  const processor = new WagerTransactionProcessor(
+    wallets,
+    transactions,
+    ledger,
+    outbox,
+    uuidGenerator,
+    noopMetrics,
+    noopLogContext,
+  );
 
   return {
-    createWallet: new CreateWalletUseCase(runner, clock, uuidGenerator, wallets, transactions, ledger, outbox),
+    createWallet: new CreateWalletUseCase(
+      runner,
+      clock,
+      uuidGenerator,
+      wallets,
+      transactions,
+      ledger,
+      outbox,
+      noopMetrics,
+    ),
     submit: new SubmitWagerTransactionUseCase(
       runner,
       clock,
@@ -45,11 +83,12 @@ export function wireUseCases(orm: MikroORM, clock: MutableClock) {
       transactions,
       ledger,
       processor,
+      noopMetrics,
     ),
     getWallet: new GetWalletUseCase(wallets),
     getLedger: new GetWalletLedgerUseCase(wallets, ledger),
     getTransaction: new GetWagerTransactionUseCase(transactions),
-    reconcile: new ReconcileWalletUseCase(wallets, ledger, noopLogger),
+    reconcile: new ReconcileWalletUseCase(wallets, ledger, noopLogger, noopMetrics),
     reprocess: new ReprocessPendingReferencesUseCase(
       runner,
       clock,

@@ -4,8 +4,13 @@ import {
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { OutboxPublisher } from '../../application/workers/outbox-publisher.js';
 import { LOGGER, type Logger } from '../../application/ports/logger.js';
+import {
+  LOG_CONTEXT_STORE,
+  type LogContextStore,
+} from '../../application/ports/log-context.js';
 
 @Injectable()
 export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModuleDestroy {
@@ -16,6 +21,7 @@ export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModul
   constructor(
     private readonly publisher: OutboxPublisher,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(LOG_CONTEXT_STORE) private readonly logContext: LogContextStore,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -44,7 +50,9 @@ export class OutboxPublisherScheduler implements OnApplicationBootstrap, OnModul
     }
     this.running = true;
     try {
-      const result = await this.publisher.runOnce();
+      const result = await this.logContext.run({ correlationId: randomUUID() }, () =>
+        this.publisher.runOnce(),
+      );
       if (result.published > 0 || result.retried > 0) {
         this.logger.info('outbox publisher tick', {
           claimed: result.claimed,

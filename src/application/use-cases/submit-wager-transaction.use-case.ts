@@ -19,6 +19,7 @@ import {
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../ports/transaction-runner.js';
 import { CLOCK, type Clock } from '../ports/clock.js';
 import { ID_GENERATOR, type IdGenerator } from '../ports/id-generator.js';
+import { METRICS, type Metrics } from '../ports/metrics.js';
 import { WagerTransactionProcessor } from '../services/wager-transaction-processor.js';
 
 export interface SubmitWagerTransactionCommand {
@@ -54,6 +55,7 @@ export class SubmitWagerTransactionUseCase {
     @Inject(WAGER_TRANSACTION_REPOSITORY) private readonly transactions: IWagerTransactionRepository,
     @Inject(WALLET_LEDGER_ENTRY_REPOSITORY) private readonly ledger: IWalletLedgerEntryRepository,
     private readonly processor: WagerTransactionProcessor,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
@@ -69,6 +71,34 @@ export class SubmitWagerTransactionUseCase {
       referenceExternalTransactionId: command.referenceExternalTransactionId,
     });
 
+    return this.executeWithRetry(command, payloadHash);
+  }
+
+  private async executeWithRetry(
+    command: SubmitWagerTransactionCommand,
+    payloadHash: string,
+  ): Promise<SubmitWagerTransactionResult> {
+    try {
+      return await this.attempt(command, payloadHash);
+    } catch (error) {
+      if (!(error instanceof PersistenceConflictError)) {
+        throw error;
+      }
+      this.metrics.lockConflict();
+      const raced = await this.runner.run(() =>
+        this.replayIfKnown(command.idempotencyKey, payloadHash),
+      );
+      if (raced) {
+        return raced;
+      }
+      throw error;
+    }
+  }
+
+  private attempt(
+    command: SubmitWagerTransactionCommand,
+    payloadHash: string,
+  ): Promise<SubmitWagerTransactionResult> {
     return this.runner.run(async () => {
       const replay = await this.replayIfKnown(command.idempotencyKey, payloadHash);
       if (replay) {
@@ -97,22 +127,11 @@ export class SubmitWagerTransactionUseCase {
         createdAt: now,
       });
 
-      let outcome;
-      try {
-        outcome = await this.processor.process(transaction, wallet, {
-          correlationId: command.correlationId ?? this.ids.next(),
-          causationId: command.causationId,
-          now,
-        });
-      } catch (error) {
-        if (error instanceof PersistenceConflictError) {
-          const raced = await this.replayIfKnown(command.idempotencyKey, payloadHash);
-          if (raced) {
-            return raced;
-          }
-        }
-        throw error;
-      }
+      const outcome = await this.processor.process(transaction, wallet, {
+        correlationId: command.correlationId ?? this.ids.next(),
+        causationId: command.causationId,
+        now,
+      });
 
       return {
         transactionId: transaction.id,
@@ -137,6 +156,7 @@ export class SubmitWagerTransactionUseCase {
       throw new IdempotencyConflictError(idempotencyKey);
     }
 
+    this.metrics.duplicateDetected('idempotency-key');
     return {
       transactionId: existing.id,
       status: existing.status,

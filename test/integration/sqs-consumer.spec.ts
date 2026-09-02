@@ -8,7 +8,7 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { createTestOrm, truncateAll } from './orm-fixture.js';
-import { MutableClock, wireUseCases } from './wire-use-cases.js';
+import { MutableClock, noopLogContext, noopMetrics, wireUseCases } from './wire-use-cases.js';
 import { MikroOrmTransactionRunner } from '../../src/infrastructure/database/mikro-orm-transaction-runner.js';
 import { InboxMessageRepository } from '../../src/infrastructure/database/repositories/inbox-message.repository.js';
 import { InboundWagerTransactionHandler } from '../../src/application/messaging/inbound-wager-transaction.handler.js';
@@ -110,8 +110,9 @@ beforeEach(async () => {
     new InboxMessageRepository(orm.em),
     uc.submit,
     clock,
+    noopLogContext,
   );
-  consumer = new SqsWagerTransactionConsumer(sqs, handler, noopLogger);
+  consumer = new SqsWagerTransactionConsumer(sqs, handler, noopLogger, noopMetrics, noopLogContext);
 });
 
 const consume = async (expected = 1): Promise<void> => {

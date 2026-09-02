@@ -23,6 +23,8 @@ import {
   OUTBOX_MESSAGE_REPOSITORY,
 } from '../../domain/repositories/tokens.js';
 import { ID_GENERATOR, type IdGenerator } from '../ports/id-generator.js';
+import { METRICS, type Metrics } from '../ports/metrics.js';
+import { LOG_CONTEXT_STORE, type LogContextStore } from '../ports/log-context.js';
 
 export const MAX_REFERENCE_CHECK_ATTEMPTS = 10;
 
@@ -54,9 +56,30 @@ export class WagerTransactionProcessor {
     @Inject(WALLET_LEDGER_ENTRY_REPOSITORY) private readonly ledger: IWalletLedgerEntryRepository,
     @Inject(OUTBOX_MESSAGE_REPOSITORY) private readonly outbox: IOutboxMessageRepository,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(METRICS) private readonly metrics: Metrics,
+    @Inject(LOG_CONTEXT_STORE) private readonly logContext: LogContextStore,
   ) {}
 
   async process(
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    context: ProcessContext,
+  ): Promise<ProcessOutcome> {
+    this.logContext.enrich({
+      transactionId: transaction.id,
+      walletId: wallet.id,
+      providerId: transaction.providerId,
+    });
+    const startedAt = performance.now();
+    const outcome = await this.runProcess(transaction, wallet, context);
+    this.metrics.observeProcessingLatency(
+      (performance.now() - startedAt) / 1000,
+      outcome.status,
+    );
+    return outcome;
+  }
+
+  private async runProcess(
     transaction: WagerTransaction,
     wallet: Wallet,
     context: ProcessContext,
@@ -119,6 +142,7 @@ export class WagerTransactionProcessor {
       ),
     );
 
+    this.metrics.transactionSettled(WagerTransactionStatus.Processed, transaction.kind);
     return { status: WagerTransactionStatus.Processed, balance: wallet.balance };
   }
 
@@ -185,6 +209,10 @@ export class WagerTransactionProcessor {
     }
     transaction.scheduleReferenceCheck(context.now);
     await this.transactions.save(transaction);
+    this.metrics.retryScheduled('reference');
+    if (!isRetry) {
+      this.metrics.transactionSettled(WagerTransactionStatus.PendingReference, transaction.kind);
+    }
 
     if (!isRetry) {
       await this.outbox.save(
@@ -217,6 +245,7 @@ export class WagerTransactionProcessor {
         ),
       ),
     );
+    this.metrics.transactionSettled(WagerTransactionStatus.Rejected, transaction.kind);
     return { status: WagerTransactionStatus.Rejected, balance: wallet.balance, failureCode };
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { encodeLedgerCursor, decodeLedgerCursor } from './ledger-cursor.js';
-import { InvalidLedgerCursorError } from '../../domain/errors/invalid-ledger-cursor.error.js';
+import { encodeLedgerCursor, decodeLedgerCursor } from '../../../../src/application/pagination/ledger-cursor.js';
+import { InvalidLedgerCursorError } from '../../../../src/domain/errors/invalid-ledger-cursor.error.js';
 
 describe('ledger cursor', () => {
   it('round-trips createdAt and id opaquely', () => {

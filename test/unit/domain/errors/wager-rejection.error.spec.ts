@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'bun:test';
-import { FailureCode, isFailureCode } from '../enums/failure-code.js';
-import { DomainError } from './domain-error.js';
-import { WagerRejectionError } from './wager-rejection.error.js';
-import { WagerFailureError } from './wager-failure.error.js';
-import { CurrencyMismatchError } from './currency-mismatch.error.js';
-import { InsufficientFundsError } from './insufficient-funds.error.js';
-import { ReversalWouldOverdrawError } from './reversal-would-overdraw.error.js';
-import { IdempotencyConflictError } from './idempotency-conflict.error.js';
-import { ReferenceResolutionError } from './reference-resolution.error.js';
-import { PermanentInfrastructureError } from './permanent-infrastructure.error.js';
+import { FailureCode, isFailureCode } from '../../../../src/domain/enums/failure-code.js';
+import { DomainError } from '../../../../src/domain/errors/domain-error.js';
+import { WagerRejectionError } from '../../../../src/domain/errors/wager-rejection.error.js';
+import { WagerFailureError } from '../../../../src/domain/errors/wager-failure.error.js';
+import { CurrencyMismatchError } from '../../../../src/domain/errors/currency-mismatch.error.js';
+import { InsufficientFundsError } from '../../../../src/domain/errors/insufficient-funds.error.js';
+import { ReversalWouldOverdrawError } from '../../../../src/domain/errors/reversal-would-overdraw.error.js';
+import { IdempotencyConflictError } from '../../../../src/domain/errors/idempotency-conflict.error.js';
+import { ReferenceResolutionError } from '../../../../src/domain/errors/reference-resolution.error.js';
+import { PermanentInfrastructureError } from '../../../../src/domain/errors/permanent-infrastructure.error.js';
 
 describe('FailureCode taxonomy', () => {
   it('every code is a stable UPPER_SNAKE string equal to nothing else', () => {

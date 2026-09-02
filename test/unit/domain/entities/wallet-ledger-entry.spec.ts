@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { WalletLedgerEntry } from './wallet-ledger-entry.js';
-import { Money } from './money.js';
-import { LedgerDirection } from '../enums/ledger-direction.enum.js';
-import { InvalidLedgerEntryError } from '../errors/invalid-ledger-entry.error.js';
+import { WalletLedgerEntry } from '../../../../src/domain/entities/wallet-ledger-entry.js';
+import { Money } from '../../../../src/domain/entities/money.js';
+import { LedgerDirection } from '../../../../src/domain/enums/ledger-direction.enum.js';
+import { InvalidLedgerEntryError } from '../../../../src/domain/errors/invalid-ledger-entry.error.js';
 
 const brl = (amount: string): Money => Money.from({ amount, currency: 'BRL' });
 

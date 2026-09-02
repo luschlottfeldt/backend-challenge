@@ -24,7 +24,7 @@ negócio:
   domain, application (placeholder), infrastructure, presentation, um único `AppModule`.
 - **Endpoints mapeados:** todos os da seção 9 do desafio, mais `/health/live` e `/health/ready`
   (esses dois com lógica real, validados contra containers reais).
-- **Testes:** scaffolding pronto (`src/**/*.spec.ts` para unidade, `test/integration/`,
+- **Testes:** scaffolding pronto (`test/unit/` para unidade, `test/integration/`,
   `test/concurrency/`), com um smoke test de integração real passando contra o Postgres.
 - **Sem comentários no código-fonte** (convenção adotada a partir da tarefa 5, aplicada
   retroativamente a tudo o que já existia).
@@ -394,6 +394,86 @@ integração**, `tsc`/`oxlint` limpos.
 SQS com inbox atômico e classificação de erro, 4 workers no processo único ligáveis por env.
 **114 unitários + 63 de integração**, `tsc`/`oxlint` limpos, boot sobe os 4 workers sem erro.
 
+## Bloco F — Observabilidade + testes pesados
+
+### Tarefa 26 — métricas
+
+- **Lib:** `prom-client` (padrão de fato, histograma com buckets pronto, zero-config, roda no Bun).
+- **Porta** `Metrics` (`application/ports/metrics.ts`) + adapter `PrometheusMetrics`
+  (`infrastructure/observability`, `Registry` próprio por instância, método `collect()` para o
+  endpoint da tarefa 27). Métricas expostas (cobrem o mínimo da seção 12):
+  - `wager_transactions_settled_total{status,kind}` — transações por status
+  - `wager_duplicates_detected_total{source}` — `source` = `idempotency-key` (replay no use case)
+    ou `inbox` (dedup no consumidor SQS)
+  - `wager_retries_scheduled_total{kind}` — `kind` = `outbox` ou `reference`
+  - `wager_messages_dead_lettered_total{reason}` — mensagens para a DLQ
+  - `wager_lock_conflicts_total` — `PersistenceConflictError` nos use cases +
+    `LockWaitTimeout`/`Deadlock` do MikroORM no filtro
+  - `wager_processing_latency_seconds{outcome}` — histograma medido em volta de
+    `WagerTransactionProcessor.process` (`performance.now()`, não o `Clock` — latência é wall time
+    real, não determinismo de domínio)
+  - `wager_outbox_lag_seconds` — gauge, idade do evento não publicado mais antigo; setado a cada
+    tick do `OutboxPublisher` via novo `IOutboxMessageRepository.oldestUnpublishedAt()`
+- **DI:** `{ provide: METRICS, useExisting: PrometheusMetrics }` — a classe concreta também é
+  provider, pro controller de métricas (tarefa 27) injetar e chamar `collect()`.
+- Testes recebem um `noopMetrics` (em `wire-use-cases.ts`). Unit test do adapter valida o texto
+  Prometheus e o isolamento por instância.
+
+### Tarefa 27 — endpoint `/metrics` + divergência de reconciliação
+
+- `MetricsController` (`GET /metrics`, sem guard, igual aos health) devolve `collect()` com
+  `Content-Type: text/plain; version=0.0.4`.
+- `ReconcileWalletUseCase` incrementa `wager_reconciliation_divergences_total` quando
+  `!consistent`, junto do `logger.warn` que já existia — a seção 9 exige que divergência seja
+  logada **e** contabilizada em métrica, além de sinalizada na resposta.
+
+### Tarefa 28 — logs estruturados enriquecidos
+
+- Porta `LogContextStore` (`application/ports/log-context.ts`) + adapter `AlsLogContextStore`
+  (`AsyncLocalStorage`). `run(fields, work)` abre um escopo, `enrich(fields)` adiciona campos ao
+  escopo corrente, `current()` lê. `LoggerAdapter` mescla `current()` em toda linha (o `context`
+  explícito da chamada sobrescreve).
+- Onde o escopo é aberto: `LogContextInterceptor` (`APP_INTERCEPTOR`) para HTTP —
+  `correlationId` do header `X-Correlation-Id` ou gerado, ecoado na resposta, + `walletId`/
+  `providerId` do corpo quando presentes; `SqsWagerTransactionConsumer.consume` por mensagem
+  (`correlationId` gerado + `messageId` da SQS); os schedulers de outbox e de reprocessamento por
+  tick (`correlationId` gerado).
+- Onde é enriquecido: `InboundWagerTransactionHandler` após o parse (`messageId` do envelope,
+  `correlationId`, `providerId`, `walletId`); `WagerTransactionProcessor.process`
+  (`transactionId`, `walletId`, `providerId`). Assim toda linha logada dentro do processamento
+  carrega os 5 campos da seção 12 sem passá-los à mão. Nenhum payload financeiro vai pro log.
+
+### Tarefas 29–30 — testes de concorrência e ponta a ponta
+
+- `test/concurrency/` (Postgres + LocalStack reais). Cada operação concorrente roda dentro de um
+  `RequestContext.create(orm.em, work)` — é o mesmo mecanismo que o `@mikro-orm/nestjs` usa por
+  request, e é o único jeito de o `em.transactional` interno e o proxy `orm.em` dos repositórios
+  resolverem para o fork certo daquela operação (um `orm.em.fork()` cru não estabelece o
+  `TransactionContext`, então o `SELECT ... FOR UPDATE` falha com "An open transaction is
+  required"). Pool do ORM de teste subiu para `max: 40` para caber 50 transações simultâneas.
+- **Bug corrigido no caminho:** `SubmitWagerTransactionUseCase` fazia o retry pós
+  `PersistenceConflictError` (replay) **dentro da mesma transação já abortada** pelo unique
+  violation — em Postgres toda query seguinte falha com "current transaction is aborted".
+  Refatorado: `attempt()` roda a transação; se estourar `PersistenceConflictError`, o
+  `executeWithRetry()` abre uma **transação nova** só para o replay. Só apareceu sob concorrência
+  real (50 submissões idênticas).
+  - `wager-concurrency.spec.ts`: 50 submissões idênticas em paralelo → 1 débito, 1 lançamento,
+    49 replays; saldo 100 + duas apostas de 80 concorrentes → 1 PROCESSED + 1 REJECTED
+    (`INSUFFICIENT_FUNDS`) + saldo 20 + 1 débito no ledger; rajada de 20 apostas concorrentes na
+    mesma wallet → `reconcile` (com repos "reiniciados" = fork novo) ainda consistente; REFUND
+    que chega junto do BET → segura em `PENDING_REFERENCE` e o worker de reprocessamento resolve.
+  - `messaging-concurrency.spec.ts`: 15 mensagens / 3 wallets processadas por 3 consumidores
+    competindo → cada uma uma vez, saldos exatos; handler commita e "morre" antes do ack →
+    redelivery → segundo handler devolve `duplicate`, saldo intacto; 12 eventos no outbox / 2
+    publishers concorrentes → 12 publicados, nenhum sobra, 12 na fila.
+- `test/integration/e2e-flow.spec.ts`: sobe o `AppModule` inteiro (workers desligados por env),
+  cobre `/health/live` + `/health/ready`, um ciclo completo por HTTP (create → BET → WIN →
+  paginação do ledger por cursor → lookup por provider+external → reconciliação consistente com 3
+  lançamentos) e `/metrics` refletindo trabalho processado.
+
+**Bloco F (26–30):** `prom-client` com 8 métricas, endpoint `/metrics`, contexto de log via
+`AsyncLocalStorage` com os 5 campos obrigatórios, testes de concorrência e e2e reais.
+
 ## Estrutura do projeto
 
 - O código do desafio vive dentro desta pasta (`backend-challenge/`), que já é seu próprio
@@ -628,11 +708,12 @@ reproduzível a partir de um clone limpo.
 
 ## Scaffolding de testes
 
-- Testes unitários ficam **colocados junto ao código-fonte** em `src/` (`*.spec.ts`), seguindo a
-  convenção padrão do Nest/Bun já usada desde a tarefa 1 — não há uma pasta `test/unit/` separada,
-  para evitar duplicar "onde colocar o teste unitário de X". Nenhum teste unitário real existe
-  ainda porque não há lógica de negócio implementada (`Money`, `Wallet`, etc. só lançam
-  `Not implemented`); virão na fase de desenvolvimento.
+- Testes unitários ficam em **`test/unit/`**, espelhando a árvore de `src/` (ex.
+  `test/unit/domain/entities/money.spec.ts` testa `src/domain/entities/money.ts`), importando o
+  código de produção por caminho relativo até `src/`. `src/` fica só com código de produção.
+  (Até o Bloco E os specs ficavam colocados em `src/**/*.spec.ts`; migrados para `test/unit/`
+  depois, sem mudança de conteúdo — só os imports relativos foram reescritos.)
+  `tsconfig.build.json` já exclui `test` e `**/*spec.ts`, então o build de produção não os toca.
 - `test/` na raiz é reservado para as duas categorias que exigem infraestrutura real — Postgres e
   LocalStack em containers, nunca mocks completos (restrição eliminatória do desafio, seção 14):
   - `test/integration/`
@@ -640,7 +721,7 @@ reproduzível a partir de um clone limpo.
     lógica de domínio funcionando, que ainda não existe)
 - Scripts do `package.json` renomeados para bater com a taxonomia exata da seção 13 do desafio
   (Unidade / Integração / Concorrência), substituindo o `test:e2e` genérico do scaffold original
-  do Nest: `test` (unidade, em `src/`), `test:integration`, `test:concurrency`.
+  do Nest: `test` (unidade, `test/unit/`), `test:integration`, `test:concurrency`.
 - Smoke test real criado em `test/integration/database-connectivity.spec.ts`: inicializa o
   MikroORM com a config real do projeto e roda `select 1` contra o Postgres do
   `docker-compose.yml` — prova que a categoria "integração" já está funcionalmente conectada à

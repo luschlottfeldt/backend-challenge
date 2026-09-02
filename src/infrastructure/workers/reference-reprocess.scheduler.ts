@@ -4,8 +4,13 @@ import {
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { ReprocessPendingReferencesUseCase } from '../../application/use-cases/reprocess-pending-references.use-case.js';
 import { LOGGER, type Logger } from '../../application/ports/logger.js';
+import {
+  LOG_CONTEXT_STORE,
+  type LogContextStore,
+} from '../../application/ports/log-context.js';
 
 @Injectable()
 export class ReferenceReprocessScheduler implements OnApplicationBootstrap, OnModuleDestroy {
@@ -16,6 +21,7 @@ export class ReferenceReprocessScheduler implements OnApplicationBootstrap, OnMo
   constructor(
     private readonly useCase: ReprocessPendingReferencesUseCase,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(LOG_CONTEXT_STORE) private readonly logContext: LogContextStore,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -44,7 +50,7 @@ export class ReferenceReprocessScheduler implements OnApplicationBootstrap, OnMo
     }
     this.running = true;
     try {
-      await this.useCase.execute();
+      await this.logContext.run({ correlationId: randomUUID() }, () => this.useCase.execute());
     } catch (error) {
       this.logger.error('reference reprocess tick failed', {
         error: (error as Error).message,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { canonicalJsonStringify } from './canonical-json.js';
+import { canonicalJsonStringify } from '../../../../src/domain/support/canonical-json.js';
 
 describe('canonicalJsonStringify', () => {
   it('sorts object keys recursively', () => {

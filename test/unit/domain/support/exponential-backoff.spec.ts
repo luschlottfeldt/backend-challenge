@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { exponentialBackoffDelayMs } from './exponential-backoff.js';
+import { exponentialBackoffDelayMs } from '../../../../src/domain/support/exponential-backoff.js';
 
 describe('exponentialBackoffDelayMs', () => {
   it('doubles from a 5s base', () => {

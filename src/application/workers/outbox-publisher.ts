@@ -5,6 +5,7 @@ import { TRANSACTION_RUNNER, type TransactionRunner } from '../ports/transaction
 import { CLOCK, type Clock } from '../ports/clock.js';
 import { LOGGER, type Logger } from '../ports/logger.js';
 import { MESSAGE_PUBLISHER, type MessagePublisher } from '../ports/message-publisher.js';
+import { METRICS, type Metrics } from '../ports/metrics.js';
 
 const DEFAULT_BATCH_SIZE = 10;
 
@@ -22,6 +23,7 @@ export class OutboxPublisher {
     @Inject(MESSAGE_PUBLISHER) private readonly publisher: MessagePublisher,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   runOnce(batchSize = DEFAULT_BATCH_SIZE): Promise<OutboxPublishTick> {
@@ -44,6 +46,7 @@ export class OutboxPublisher {
         } catch (error) {
           message.scheduleRetry(now);
           tick.retried += 1;
+          this.metrics.retryScheduled('outbox');
           this.logger.warn('outbox publish failed; retry scheduled', {
             outboxMessageId: message.id,
             eventType: message.eventType,
@@ -53,6 +56,11 @@ export class OutboxPublisher {
         }
         await this.outbox.save(message);
       }
+
+      const oldest = await this.outbox.oldestUnpublishedAt();
+      this.metrics.setOutboxLagSeconds(
+        oldest ? Math.max(0, (now.getTime() - oldest.getTime()) / 1000) : 0,
+      );
 
       return tick;
     });

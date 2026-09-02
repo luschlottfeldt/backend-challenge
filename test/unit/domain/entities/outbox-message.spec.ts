@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { OutboxMessage } from './outbox-message.js';
-import { WagerTransactionRejected } from '../events/wager-transaction-rejected.event.js';
-import { WagerTransaction } from './wager-transaction.js';
-import { Money } from './money.js';
-import { WagerTransactionKind } from '../enums/wager-transaction-kind.enum.js';
-import { FailureCode } from '../enums/failure-code.js';
-import { InvalidMessageStateError } from '../errors/invalid-message-state.error.js';
+import { OutboxMessage } from '../../../../src/domain/entities/outbox-message.js';
+import { WagerTransactionRejected } from '../../../../src/domain/events/wager-transaction-rejected.event.js';
+import { WagerTransaction } from '../../../../src/domain/entities/wager-transaction.js';
+import { Money } from '../../../../src/domain/entities/money.js';
+import { WagerTransactionKind } from '../../../../src/domain/enums/wager-transaction-kind.enum.js';
+import { FailureCode } from '../../../../src/domain/enums/failure-code.js';
+import { InvalidMessageStateError } from '../../../../src/domain/errors/invalid-message-state.error.js';
 
 const NOW = new Date('2026-09-01T00:00:00.000Z');
 

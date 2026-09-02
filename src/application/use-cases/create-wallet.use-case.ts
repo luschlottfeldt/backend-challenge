@@ -22,6 +22,7 @@ import {
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../ports/transaction-runner.js';
 import { CLOCK, type Clock } from '../ports/clock.js';
 import { ID_GENERATOR, type IdGenerator } from '../ports/id-generator.js';
+import { METRICS, type Metrics } from '../ports/metrics.js';
 import { toWalletView, type WalletView } from './views.js';
 
 const INTERNAL_PROVIDER_ID = 'internal';
@@ -44,6 +45,7 @@ export class CreateWalletUseCase {
     @Inject(WAGER_TRANSACTION_REPOSITORY) private readonly transactions: IWagerTransactionRepository,
     @Inject(WALLET_LEDGER_ENTRY_REPOSITORY) private readonly ledger: IWalletLedgerEntryRepository,
     @Inject(OUTBOX_MESSAGE_REPOSITORY) private readonly outbox: IOutboxMessageRepository,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   execute(command: CreateWalletCommand): Promise<WalletView> {
@@ -75,6 +77,7 @@ export class CreateWalletUseCase {
         await this.wallets.save(wallet);
       } catch (error) {
         if (error instanceof PersistenceConflictError) {
+          this.metrics.lockConflict();
           throw new WalletAlreadyExistsError(command.playerId, currency);
         }
         throw error;

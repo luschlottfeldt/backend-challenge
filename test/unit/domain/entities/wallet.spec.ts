@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { Wallet } from './wallet.js';
-import { Money } from './money.js';
-import { LedgerDirection } from '../enums/ledger-direction.enum.js';
-import { CurrencyMismatchError } from '../errors/currency-mismatch.error.js';
-import { InsufficientFundsError } from '../errors/insufficient-funds.error.js';
+import { Wallet } from '../../../../src/domain/entities/wallet.js';
+import { Money } from '../../../../src/domain/entities/money.js';
+import { LedgerDirection } from '../../../../src/domain/enums/ledger-direction.enum.js';
+import { CurrencyMismatchError } from '../../../../src/domain/errors/currency-mismatch.error.js';
+import { InsufficientFundsError } from '../../../../src/domain/errors/insufficient-funds.error.js';
 
 const brl = (amount: string): Money => Money.from({ amount, currency: 'BRL' });
 const NOW = new Date('2026-09-01T00:00:00.000Z');
