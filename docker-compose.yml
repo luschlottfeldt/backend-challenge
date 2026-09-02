@@ -1,5 +1,20 @@
 name: wagering-processor
 
+x-app-env: &app-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USER: wagering
+  DB_PASSWORD: wagering
+  DB_NAME: wagering
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_SQS_ENDPOINT: http://localstack:4566
+  SQS_WAGER_TRANSACTIONS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  SQS_WAGER_TRANSACTIONS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+  SQS_INTEGRATION_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/integration-events.fifo
+  SQS_INTEGRATION_EVENTS_DLQ_URL: http://localstack:4566/000000000000/integration-events-dlq.fifo
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -33,6 +48,46 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+      target: build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+    command: ["bun", "run", "migration:up"]
+    restart: "no"
+
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+    deploy:
+      replicas: 3
+
+  gateway:
+    profiles: ["app"]
+    image: nginx:1.27-alpine
+    depends_on:
+      - app
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "3000:80"
 
 volumes:
   postgres_data:

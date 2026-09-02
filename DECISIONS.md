@@ -1276,3 +1276,44 @@ na API e no evento `WalletBalanceChanged`); o controle de concorrência é 100% 
 
 **Suítes após o Bloco E:** 118 unitários, 74 de integração, 11 de concorrência — verdes.
 `tsc`/`oxlint` limpos. Boot confirma output 100% JSON, sem SQL debug.
+
+## Revisão pós-entrega — Bloco F1: deploy containerizado multi-instância
+
+O desafio centra em "solução correta com múltiplas instâncias". Havia `docker-compose.yml` só
+da infra; agora a própria aplicação é containerizada e o compose sobe N réplicas.
+
+### `Dockerfile` multi-stage
+
+`deps` (só `package.json` + `bun.lock` → `bun install --frozen-lockfile`, camada cacheável) →
+`build` (copia `src` + tsconfigs → `bun run build` → `dist/`) → `runtime` (`oven/bun:1-alpine`,
+`NODE_ENV=production`, `bun install --frozen-lockfile --production`, copia `dist/` + `src/`,
+`HEALTHCHECK` em `/health/live`, `CMD bun dist/main.js`). `src/` vai junto no runtime só para o
+`mikro-orm.config.ts` e os globs `entitiesTs`/`migrations.pathTs` resolverem — a app roda pelo
+`dist/`.
+
+### Compose — profile `app`
+
+`docker compose up -d` (sem profile) continua subindo **só** Postgres + LocalStack (dev e testes
+inalterados). O profile `app` adiciona:
+
+- **`migrate`** — one-shot (`target: build`, tem o `@mikro-orm/cli`), roda `migration:up` e sai.
+- **`app`** — `deploy.replicas: 3`, `target: runtime`, `depends_on` migrate
+  (`service_completed_successfully`) + infra healthy. Cada réplica roda API + os 3 workers.
+- **`gateway`** — nginx `1.27-alpine` com `resolver 127.0.0.11` re-resolvendo `app:3000` por
+  request → round-robin real entre as réplicas. Publica `3000:80`.
+
+Env compartilhada via anchor YAML (`x-app-env`); as URLs de fila usam path-style
+`http://localstack:4566/000000000000/<queue>` (o host `localhost.localstack.cloud` resolveria
+para 127.0.0.1 dentro do container).
+
+Por que gateway em vez de `ports: "3000-3005:3000"`: o Compose v2 só publica **uma** réplica
+quando se combina range de porta no host com `deploy.replicas` — o nginx dá o balanceamento de
+verdade e a história "N instâncias stateless atrás de um LB" fica explícita.
+
+### Validação
+
+`docker compose --profile app up -d --build`: 3 réplicas `healthy`, `migrate` completou, os 3
+workers logados em cada réplica. Cenário obrigatório da seção 8 pelo gateway (3 `BET` de 80
+concorrentes numa carteira de 100) → 1 `PROCESSED`, 2 `REJECTED`/`INSUFFICIENT_FUNDS`, saldo 20,
+`reconcile` consistente — agora entre containers de SO distintos, não fibras num processo.
+Suítes locais inalteradas: 118 / 74 / 11 verdes, `tsc`/`oxlint` limpos.

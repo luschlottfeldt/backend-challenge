@@ -48,6 +48,24 @@ curl http://localhost:3000/health/ready
 curl http://localhost:3000/metrics
 ```
 
+## Rodar containerizado — múltiplas instâncias
+
+O `docker compose up -d` sozinho sobe **só** Postgres + LocalStack (usado pelo dev local e pelos
+testes). O profile `app` sobe a stack completa: um one-shot de migrations e **3 réplicas** da
+aplicação (cada uma rodando API + os 3 workers), atrás de um gateway nginx que faz round-robin.
+
+```bash
+docker compose --profile app up -d --build     # infra + migrate + 3 × app + gateway
+curl http://localhost:3000/health/ready         # o gateway alterna entre as 3 réplicas
+docker compose --profile app up -d --scale app=5 # escala para 5 réplicas
+docker compose --profile app down
+```
+
+As 3 réplicas compartilham o mesmo Postgres e a mesma fila SQS — a correção sob concorrência
+(lock pessimista, `SKIP LOCKED` no outbox, inbox) é a mesma coberta por `test:concurrency`, aqui
+demonstrada entre processos de SO em containers distintos. `Dockerfile` multi-stage
+(`deps → build → runtime`), imagem final só com dependências de produção.
+
 ## Endpoints
 
 | Método | Rota | Descrição |

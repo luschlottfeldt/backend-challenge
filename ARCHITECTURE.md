@@ -114,6 +114,11 @@ O worker do outbox usa `FOR UPDATE SKIP LOCKED` para rodar com múltiplos public
 - **Processo único** — API + os 3 workers rodam juntos, cada worker ligável por env
   (`OUTBOX_PUBLISHER_ENABLED`, `SQS_CONSUMER_ENABLED`, `REFERENCE_REPROCESS_ENABLED`), então dá
   para escalar réplicas com papéis diferentes sem mudar código.
+- **Deploy multi-instância** — `Dockerfile` multi-stage (`deps → build → runtime`, imagem final
+  só com deps de produção) + o profile `app` do compose sobe migrations one-shot e **3 réplicas**
+  atrás de um gateway nginx. As réplicas compartilham Postgres e fila; a correção sob concorrência
+  é a mesma dos testes `test/concurrency/`, aqui entre containers de SO distintos. `docker compose
+  up -d` sem profile continua subindo só a infra (dev e testes).
 
 ## API HTTP
 
